@@ -430,6 +430,61 @@ class TestFeedback:
             mock_podcast_ref.update.assert_called_once_with({"feedback": "good"})
 
 
+# ─── T-041: Mark Downloaded Tests ─────────────────────────────
+
+
+class TestMarkDownloaded:
+    def test_no_auth(self):
+        response = client.post("/api/podcasts/test-id/downloaded")
+        assert response.status_code == 401
+
+    @patch(_DB_PATCH)
+    def test_not_found(self, mock_db):
+        mock_doc = MagicMock()
+        mock_doc.exists = False
+        mock_db.return_value.collection.return_value.document.return_value.get.return_value = mock_doc
+
+        with _auth_patch(), _env_patch():
+            response = client.post(
+                "/api/podcasts/test-id/downloaded",
+                headers=AUTH_HEADERS,
+            )
+            assert response.status_code == 404
+
+    @patch(_DB_PATCH)
+    def test_wrong_user(self, mock_db):
+        mock_doc_ref = MagicMock()
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        mock_doc.to_dict.return_value = {"uid": "other-uid"}
+        mock_doc_ref.get.return_value = mock_doc
+        mock_db.return_value.collection.return_value.document.return_value = mock_doc_ref
+
+        with _auth_patch(), _env_patch():
+            response = client.post(
+                "/api/podcasts/test-id/downloaded",
+                headers=AUTH_HEADERS,
+            )
+            assert response.status_code == 404
+
+    @patch(_DB_PATCH)
+    def test_mark_downloaded_success(self, mock_db):
+        mock_doc_ref = MagicMock()
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        mock_doc.to_dict.return_value = {"uid": "test-uid"}
+        mock_doc_ref.get.return_value = mock_doc
+        mock_db.return_value.collection.return_value.document.return_value = mock_doc_ref
+
+        with _auth_patch(), _env_patch():
+            response = client.post(
+                "/api/podcasts/test-id/downloaded",
+                headers=AUTH_HEADERS,
+            )
+            assert response.status_code == 200
+            mock_doc_ref.update.assert_called_once_with({"downloaded": True})
+
+
 # ─── Source Window Tests ──────────────────────────────────────
 
 

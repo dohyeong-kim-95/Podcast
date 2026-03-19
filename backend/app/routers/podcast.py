@@ -414,6 +414,28 @@ async def get_today_podcast(
     return {"podcast": data, "date": date_str}
 
 
+@router.post("/podcasts/{podcast_id}/downloaded")
+async def mark_downloaded(
+    podcast_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Mark a podcast as downloaded."""
+    uid = user["uid"]
+    db = get_firestore_client()
+    doc_ref = db.collection("podcasts").document(podcast_id)
+    doc = doc_ref.get()
+
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="Podcast not found")
+
+    data = doc.to_dict()
+    if data.get("uid") != uid:
+        raise HTTPException(status_code=404, detail="Podcast not found")
+
+    doc_ref.update({"downloaded": True})
+    return {}
+
+
 class FeedbackRequest(BaseModel):
     rating: str  # "good" | "normal" | "bad"
 

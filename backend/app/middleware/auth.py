@@ -62,4 +62,14 @@ async def verify_scheduler_token(request: Request) -> dict:
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid OIDC token")
 
+    # T-032-1: Validate service account email
+    expected_sa = os.getenv("SCHEDULER_SERVICE_ACCOUNT", "")
+    if expected_sa:
+        token_email = claims.get("email", "")
+        if token_email != expected_sa:
+            raise HTTPException(
+                status_code=403,
+                detail="Unauthorized service account",
+            )
+
     return claims

@@ -1,6 +1,8 @@
-"""T-032-2: Podcast generation pipeline tests."""
+"""T-032-2 + T-034~T-038: Podcast generation pipeline tests."""
 
+import json
 import os
+from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -192,6 +194,34 @@ class TestSchedulerTokenValidation:
 # ─── T-032: Podcast Pipeline Tests ────────────────────────────
 
 
+def _setup_transaction_mock(mock_db, existing_status=None):
+    """Set up mock for Firestore transaction-based generate/me.
+
+    The transactional decorator calls the function with (transaction, ref).
+    We mock the transaction and snapshot to simulate existing status.
+    """
+    mock_snapshot = MagicMock()
+    if existing_status:
+        mock_snapshot.exists = True
+        mock_snapshot.to_dict.return_value = {"status": existing_status}
+    else:
+        mock_snapshot.exists = False
+        mock_snapshot.to_dict.return_value = {}
+
+    mock_doc_ref = MagicMock()
+    mock_doc_ref.get.return_value = mock_snapshot
+
+    mock_db_instance = mock_db.return_value
+    mock_db_instance.collection.return_value.document.return_value = mock_doc_ref
+
+    # Mock transaction: just call the @transactional function directly
+    mock_txn = MagicMock()
+    mock_db_instance.transaction.return_value = mock_txn
+
+    # Patch firestore.transactional to execute function immediately
+    return mock_doc_ref, mock_txn
+
+
 class TestGenerateMe:
     def test_no_auth(self):
         response = client.post("/api/generate/me")
@@ -200,12 +230,10 @@ class TestGenerateMe:
     @patch(_DB_PATCH)
     def test_already_completed(self, mock_db):
         """If today's podcast is already completed, return 409."""
-        mock_doc = MagicMock()
-        mock_doc.exists = True
-        mock_doc.to_dict.return_value = {"status": "completed"}
-        mock_db.return_value.collection.return_value.document.return_value.get.return_value = mock_doc
-
-        with _auth_patch(), _env_patch():
+        _setup_transaction_mock(mock_db, "completed")
+        with _auth_patch(), _env_patch(), \
+             patch("app.routers.podcast.firestore.transactional",
+                   side_effect=lambda fn: lambda txn, ref: fn(txn, ref)):
             response = client.post(
                 "/api/generate/me",
                 headers=AUTH_HEADERS,
@@ -215,12 +243,23 @@ class TestGenerateMe:
     @patch(_DB_PATCH)
     def test_already_generating(self, mock_db):
         """If today's podcast is generating, return 409."""
-        mock_doc = MagicMock()
-        mock_doc.exists = True
-        mock_doc.to_dict.return_value = {"status": "generating"}
-        mock_db.return_value.collection.return_value.document.return_value.get.return_value = mock_doc
+        _setup_transaction_mock(mock_db, "generating")
+        with _auth_patch(), _env_patch(), \
+             patch("app.routers.podcast.firestore.transactional",
+                   side_effect=lambda fn: lambda txn, ref: fn(txn, ref)):
+            response = client.post(
+                "/api/generate/me",
+                headers=AUTH_HEADERS,
+            )
+            assert response.status_code == 409
 
-        with _auth_patch(), _env_patch():
+    @patch(_DB_PATCH)
+    def test_already_no_sources(self, mock_db):
+        """If today's podcast has no_sources status, return 409."""
+        _setup_transaction_mock(mock_db, "no_sources")
+        with _auth_patch(), _env_patch(), \
+             patch("app.routers.podcast.firestore.transactional",
+                   side_effect=lambda fn: lambda txn, ref: fn(txn, ref)):
             response = client.post(
                 "/api/generate/me",
                 headers=AUTH_HEADERS,
@@ -230,11 +269,10 @@ class TestGenerateMe:
     @patch(_DB_PATCH)
     def test_trigger_generation(self, mock_db):
         """Should accept and start generation if no existing podcast."""
-        mock_doc = MagicMock()
-        mock_doc.exists = False
-        mock_db.return_value.collection.return_value.document.return_value.get.return_value = mock_doc
-
-        with _auth_patch(), _env_patch():
+        _setup_transaction_mock(mock_db, None)
+        with _auth_patch(), _env_patch(), \
+             patch("app.routers.podcast.firestore.transactional",
+                   side_effect=lambda fn: lambda txn, ref: fn(txn, ref)):
             response = client.post(
                 "/api/generate/me",
                 headers=AUTH_HEADERS,
@@ -246,12 +284,10 @@ class TestGenerateMe:
     @patch(_DB_PATCH)
     def test_retry_after_failure(self, mock_db):
         """Failed podcast should allow re-triggering."""
-        mock_doc = MagicMock()
-        mock_doc.exists = True
-        mock_doc.to_dict.return_value = {"status": "failed"}
-        mock_db.return_value.collection.return_value.document.return_value.get.return_value = mock_doc
-
-        with _auth_patch(), _env_patch():
+        _setup_transaction_mock(mock_db, "failed")
+        with _auth_patch(), _env_patch(), \
+             patch("app.routers.podcast.firestore.transactional",
+                   side_effect=lambda fn: lambda txn, ref: fn(txn, ref)):
             response = client.post(
                 "/api/generate/me",
                 headers=AUTH_HEADERS,
@@ -411,3 +447,148 @@ class TestWindowLogic:
     def test_podcast_id_format(self):
         from app.routers.podcast import _podcast_id
         assert _podcast_id("user123", "2026-03-19") == "user123-2026-03-19"
+
+
+# ─── T-035: NB Session expiresAt Tests ────────────────────────
+
+
+class TestNBSessionExpiry:
+    @patch("app.services.notebook.get_firestore_client")
+    @patch("app.services.notebook._get_fernet")
+    def test_expired_by_status(self, mock_fernet, mock_db):
+        """Session with status='expired' should raise ValueError."""
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        mock_doc.to_dict.return_value = {"status": "expired", "storageState": "enc"}
+        mock_db.return_value.collection.return_value.document.return_value \
+            .collection.return_value.document.return_value.get.return_value = mock_doc
+
+        from app.services.notebook import load_nb_session
+        import asyncio
+        with pytest.raises(ValueError, match="expired.*status"):
+            asyncio.get_event_loop().run_until_complete(load_nb_session("uid"))
+
+    @patch("app.services.notebook.get_firestore_client")
+    @patch("app.services.notebook._get_fernet")
+    def test_expired_by_expires_at(self, mock_fernet, mock_db):
+        """Session past expiresAt should raise ValueError even if status is 'valid'."""
+        past = datetime.now(timezone.utc) - timedelta(hours=1)
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        mock_doc.to_dict.return_value = {
+            "status": "valid",
+            "storageState": "enc",
+            "expiresAt": past,
+        }
+        mock_db.return_value.collection.return_value.document.return_value \
+            .collection.return_value.document.return_value.get.return_value = mock_doc
+
+        from app.services.notebook import load_nb_session
+        import asyncio
+        with pytest.raises(ValueError, match="expired.*expiresAt"):
+            asyncio.get_event_loop().run_until_complete(load_nb_session("uid"))
+
+    @patch("app.services.notebook.get_firestore_client")
+    @patch("app.services.notebook._get_fernet")
+    def test_valid_with_future_expires_at(self, mock_fernet, mock_db):
+        """Session with future expiresAt should succeed."""
+        future = datetime.now(timezone.utc) + timedelta(days=7)
+        mock_fernet.return_value.decrypt.return_value = b'{"cookies": []}'
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        mock_doc.to_dict.return_value = {
+            "status": "valid",
+            "storageState": "encrypted_data",
+            "expiresAt": future,
+        }
+        mock_db.return_value.collection.return_value.document.return_value \
+            .collection.return_value.document.return_value.get.return_value = mock_doc
+
+        from app.services.notebook import load_nb_session
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(load_nb_session("uid"))
+        assert result["status"] == "valid"
+
+
+# ─── T-036: NB Session Decryption Error Tests ─────────────────
+
+
+class TestNBSessionDecryption:
+    def test_invalid_fernet_key(self):
+        """Invalid Fernet key should raise ValueError, not InvalidToken."""
+        from cryptography.fernet import Fernet
+        from app.services.notebook import decrypt_storage_state
+
+        # Encrypt with one key, decrypt with another
+        key1 = Fernet.generate_key()
+        key2 = Fernet.generate_key()
+        encrypted = Fernet(key1).encrypt(b'{"cookies": []}').decode()
+
+        with patch("app.services.notebook._get_fernet", return_value=Fernet(key2)):
+            with pytest.raises(ValueError, match="decryption failed"):
+                decrypt_storage_state(encrypted)
+
+    def test_corrupted_json(self):
+        """Valid decryption but invalid JSON should raise ValueError."""
+        from cryptography.fernet import Fernet
+        from app.services.notebook import decrypt_storage_state
+
+        key = Fernet.generate_key()
+        encrypted = Fernet(key).encrypt(b"not valid json").decode()
+
+        with patch("app.services.notebook._get_fernet", return_value=Fernet(key)):
+            with pytest.raises(ValueError, match="not valid JSON"):
+                decrypt_storage_state(encrypted)
+
+    def test_valid_decryption(self):
+        """Valid encrypted data should decrypt and parse successfully."""
+        from cryptography.fernet import Fernet
+        from app.services.notebook import decrypt_storage_state
+
+        key = Fernet.generate_key()
+        data = {"cookies": [{"name": "test"}]}
+        encrypted = Fernet(key).encrypt(json.dumps(data).encode()).decode()
+
+        with patch("app.services.notebook._get_fernet", return_value=Fernet(key)):
+            result = decrypt_storage_state(encrypted)
+            assert result == data
+
+
+# ─── T-037: Instructions Field Alias Tests ─────────────────────
+
+
+class TestInstructionsAlias:
+    def test_phase5_field_names(self):
+        """Phase 5 field names (tone, depth, custom) should work."""
+        memory = {
+            "interests": "AI",
+            "tone": "친근한",
+            "depth": "깊이있게",
+            "custom": "예시를 많이 들어주세요",
+        }
+        result = build_instructions(memory)
+        assert "톤: 친근한" in result
+        assert "깊이: 깊이있게" in result
+        assert "예시를 많이 들어주세요" in result
+
+    def test_preferred_field_names_take_precedence(self):
+        """If both old and new field names exist, old (preferredTone) takes precedence."""
+        memory = {
+            "preferredTone": "전문적인",
+            "tone": "친근한",
+        }
+        result = build_instructions(memory)
+        assert "톤: 전문적인" in result
+        assert "친근한" not in result
+
+    def test_mixed_field_names(self):
+        """Mix of old and new field names should all work."""
+        memory = {
+            "preferredTone": "유머러스한",
+            "depth": "입문",
+            "custom": "짧게",
+        }
+        result = build_instructions(memory)
+        assert "톤: 유머러스한" in result
+        assert "깊이: 입문" in result
+        assert "짧게" in result

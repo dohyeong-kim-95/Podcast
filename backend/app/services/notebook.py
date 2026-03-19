@@ -7,9 +7,10 @@ import json
 import logging
 import os
 import tempfile
+from datetime import datetime, timezone
 from typing import Any
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 
 from app.services.firebase import get_firestore_client
 
@@ -27,10 +28,19 @@ def _get_fernet() -> Fernet:
 
 
 def decrypt_storage_state(encrypted: str) -> dict:
-    """Decrypt Fernet-encrypted NotebookLM storage state."""
-    f = _get_fernet()
-    decrypted = f.decrypt(encrypted.encode())
-    return json.loads(decrypted)
+    """Decrypt Fernet-encrypted NotebookLM storage state.
+
+    Raises:
+        ValueError: If decryption fails (key mismatch, corrupted data, invalid JSON).
+    """
+    try:
+        f = _get_fernet()
+        decrypted = f.decrypt(encrypted.encode())
+        return json.loads(decrypted)
+    except InvalidToken as e:
+        raise ValueError(f"NB session decryption failed (invalid key or corrupted data): {e}") from e
+    except json.JSONDecodeError as e:
+        raise ValueError(f"NB session storage state is not valid JSON: {e}") from e
 
 
 async def load_nb_session(uid: str) -> dict[str, Any]:
@@ -52,17 +62,27 @@ async def load_nb_session(uid: str) -> dict[str, Any]:
     data = doc.to_dict()
     status = data.get("status", "")
     if status == "expired":
-        raise ValueError("NB session expired")
+        raise ValueError("NB session expired (status)")
+
+    # T-035: Check expiresAt server-side regardless of status field
+    expires_at = data.get("expiresAt")
+    if expires_at is not None:
+        # Firestore timestamps come as datetime objects
+        if hasattr(expires_at, "timestamp"):
+            exp = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+            if exp <= datetime.now(timezone.utc):
+                raise ValueError("NB session expired (expiresAt)")
 
     encrypted = data.get("storageState", "")
     if not encrypted:
         raise ValueError("NB session storage state is empty")
 
+    # T-036: decrypt_storage_state now normalizes all decryption errors to ValueError
     storage_state = decrypt_storage_state(encrypted)
     return {
         "storageState": storage_state,
         "status": status,
-        "expiresAt": data.get("expiresAt"),
+        "expiresAt": expires_at,
     }
 
 

@@ -30,15 +30,15 @@ def build_instructions(memory: dict[str, Any] | None) -> str:
     if interests:
         parts.append(f"관심 분야: {interests}")
 
-    tone = memory.get("preferredTone", "")
+    tone = memory.get("preferredTone") or memory.get("tone", "")
     if tone:
         parts.append(f"톤: {tone}")
 
-    depth = memory.get("preferredDepth", "")
+    depth = memory.get("preferredDepth") or memory.get("depth", "")
     if depth:
         parts.append(f"깊이: {depth}")
 
-    custom = memory.get("customInstructions", "")
+    custom = memory.get("customInstructions") or memory.get("custom", "")
     if custom:
         parts.append(custom)
 

@@ -1,0 +1,17 @@
+{
+  "name": "Daily Podcast",
+  "short_name": "Podcast",
+  "description": "AI가 만드는 나만의 데일리 팟캐스트",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#121212",
+  "theme_color": "#121212",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    }
+  ]
+}

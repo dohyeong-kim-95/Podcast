@@ -1,4 +1,6 @@
 from datetime import datetime, timezone, timedelta
+import os
+import tempfile
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 
@@ -16,6 +18,41 @@ from app.services.storage import (
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
 KST = timezone(timedelta(hours=9))
+UPLOAD_CHUNK_SIZE = 1024 * 1024
+MAGIC_BYTE_PEEK = 12
+
+
+async def _spill_upload_to_tempfile(file: UploadFile) -> tuple[str, bytes, int]:
+    """Copy upload content to a temp file while enforcing the size limit incrementally."""
+    total_size = 0
+    header = bytearray()
+    tmp = tempfile.NamedTemporaryFile(delete=False)
+
+    try:
+        while True:
+            chunk = await file.read(UPLOAD_CHUNK_SIZE)
+            if not chunk:
+                break
+
+            total_size += len(chunk)
+            if total_size > MAX_FILE_SIZE:
+                raise HTTPException(status_code=400, detail="File size exceeds 20MB limit")
+
+            remaining_header = MAGIC_BYTE_PEEK - len(header)
+            if remaining_header > 0:
+                header.extend(chunk[:remaining_header])
+
+            tmp.write(chunk)
+    except Exception:
+        tmp.close()
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+        raise
+
+    tmp.close()
+    return tmp.name, bytes(header), total_size
 
 
 @router.post("/upload")
@@ -33,31 +70,34 @@ async def upload(
             detail=f"Unsupported file type: {content_type}. Allowed: PDF, PNG, JPG, WEBP",
         )
 
-    file_bytes = await file.read()
-    if len(file_bytes) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="File size exceeds 20MB limit")
+    temp_path, header_bytes, total_size = await _spill_upload_to_tempfile(file)
+    try:
+        if total_size == 0:
+            raise HTTPException(status_code=400, detail="Empty file")
 
-    if len(file_bytes) == 0:
-        raise HTTPException(status_code=400, detail="Empty file")
+        if not validate_file_content(header_bytes, content_type):
+            raise HTTPException(
+                status_code=400,
+                detail=f"File content does not match declared type: {content_type}",
+            )
 
-    if not validate_file_content(file_bytes, content_type):
-        raise HTTPException(
-            status_code=400,
-            detail=f"File content does not match declared type: {content_type}",
-        )
+        result = await upload_source(uid, temp_path, file.filename or "unknown", content_type)
 
-    result = await upload_source(uid, file_bytes, file.filename or "unknown", content_type)
+        # Convert image to PDF
+        if content_type.startswith("image/"):
+            source_id = result["sourceId"]
+            original_path = result["originalStoragePath"]
+            pdf_path = await convert_image_to_pdf(uid, source_id, temp_path, original_path)
+            result["convertedType"] = "application/pdf"
+            result["convertedStoragePath"] = pdf_path
+            result["status"] = "ready"
 
-    # Convert image to PDF
-    if content_type.startswith("image/"):
-        source_id = result["sourceId"]
-        original_path = result["originalStoragePath"]
-        pdf_path = await convert_image_to_pdf(uid, source_id, file_bytes, original_path)
-        result["convertedType"] = "application/pdf"
-        result["convertedStoragePath"] = pdf_path
-        result["status"] = "ready"
-
-    return result
+        return result
+    finally:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
 
 
 @router.get("")

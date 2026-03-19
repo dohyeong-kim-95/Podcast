@@ -1,3 +1,4 @@
+import os
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -47,7 +48,7 @@ def _get_bucket():
     return storage.bucket()
 
 
-async def upload_source(uid: str, file_bytes: bytes, filename: str, content_type: str) -> dict:
+async def upload_source(uid: str, source: bytes | str | os.PathLike[str], filename: str, content_type: str) -> dict:
     """Upload a source file to Storage and create Firestore metadata."""
     source_id = uuid.uuid4().hex[:12]
     date_str = _today_date_str()
@@ -56,7 +57,10 @@ async def upload_source(uid: str, file_bytes: bytes, filename: str, content_type
 
     bucket = _get_bucket()
     blob = bucket.blob(storage_path)
-    blob.upload_from_string(file_bytes, content_type=content_type)
+    if isinstance(source, (str, os.PathLike)):
+        blob.upload_from_filename(os.fspath(source), content_type=content_type)
+    else:
+        blob.upload_from_string(source, content_type=content_type)
 
     doc_data = {
         "uid": uid,
@@ -78,11 +82,16 @@ async def upload_source(uid: str, file_bytes: bytes, filename: str, content_type
     return doc_data
 
 
-async def convert_image_to_pdf(uid: str, source_id: str, file_bytes: bytes, original_storage_path: str) -> str:
+async def convert_image_to_pdf(
+    uid: str,
+    source_id: str,
+    image_source: bytes | str | os.PathLike[str],
+    original_storage_path: str,
+) -> str:
     """Convert an image to PDF using img2pdf and store alongside original."""
     import img2pdf as _img2pdf
 
-    pdf_bytes = _img2pdf.convert(file_bytes)
+    pdf_bytes = _img2pdf.convert(os.fspath(image_source) if isinstance(image_source, (str, os.PathLike)) else image_source)
 
     pdf_path = original_storage_path.rsplit(".", 1)[0] + ".pdf"
 

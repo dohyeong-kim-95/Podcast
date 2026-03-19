@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import auth, podcast, sources
+from app.routers import auth, memory, nb_session, podcast, push, sources
 from app.services.firebase import init_firebase
 
 
@@ -33,6 +33,9 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(sources.router)
 app.include_router(podcast.router)
+app.include_router(memory.router)
+app.include_router(nb_session.router)
+app.include_router(push.router)
 
 
 @app.get("/health")

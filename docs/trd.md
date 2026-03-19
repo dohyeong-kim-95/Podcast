@@ -1,364 +1,330 @@
-# Podcast — TRD v1.0
+# Podcast — TRD (Vercel + Cloud Run)
 
-## 1. 시스템 아키텍처
+## 1. 목표
 
+현재 코드베이스를 기준으로, 프론트엔드는 Vercel의 `podcast.bubblelab.dev`에서 서비스하고 백엔드는 FastAPI + Cloud Run을 유지하는 운영 구조를 정의한다.
+
+핵심 판단은 다음과 같다.
+
+- 프론트엔드만 Vercel로 올린다
+- 백엔드 재작성 없이 기존 FastAPI를 계속 사용한다
+- Firebase Auth redirect, PWA, 푸시, NotebookLM 재인증이 커스텀 도메인에서 실제로 동작해야 한다
+- `STATIC_EXPORT=1` 기반 Firebase Hosting 배포는 보조 경로로 남기되, 기본 프로덕션 경로는 아니다
+
+## 2. 시스템 아키텍처
+
+```text
+사용자 브라우저 / 모바일 PWA
+        │
+        ▼
+Vercel (Next.js 14 App Router)
+- custom domain: podcast.bubblelab.dev
+- /__/auth/* rewrite -> <firebase-project>.firebaseapp.com
+- static assets / service worker / app shell
+        │
+        │ HTTPS + Firebase ID token
+        ▼
+Cloud Run (FastAPI)
+- /api/auth/verify
+- /api/sources/*
+- /api/generate, /api/generate/me
+- /api/podcasts/*
+- /api/memory
+- /api/nb-session/*
+- /api/push-token, /api/remind-download
+        │
+        ├─ Firestore
+        ├─ Firebase Storage
+        ├─ Firebase Auth Admin
+        ├─ Firebase Cloud Messaging
+        ├─ Browserless
+        └─ notebooklm-py
+
+Cloud Scheduler
+- 06:40 KST -> POST /api/generate
+- 22:00 KST -> POST /api/remind-download
 ```
-┌─────────────────────────────────────────────────┐
-│                   사용자 (모바일)                    │
-│                  Next.js PWA                      │
-│              Firebase Hosting                     │
-└────────────────────┬────────────────────────────┘
-                     │ HTTPS
-                     ▼
-┌─────────────────────────────────────────────────┐
-│              FastAPI (Cloud Run)                  │
-│                                                   │
-│  ┌──────────┐ ┌──────────┐ ┌────────────────┐   │
-│  │ Upload   │ │ Podcast  │ │ Auth/Session   │   │
-│  │ Service  │ │ Service  │ │ Service        │   │
-│  └────┬─────┘ └────┬─────┘ └───────┬────────┘   │
-└───────┼────────────┼───────────────┼─────────────┘
-        │            │               │
-        ▼            ▼               ▼
-┌──────────┐  ┌───────────┐  ┌──────────────┐
-│ Firebase │  │notebooklm │  │Browserless.io│
-│ Storage  │  │   -py     │  │(원격 브라우저) │
-└──────────┘  └───────────┘  └──────────────┘
-        │            │
-        ▼            ▼
-┌──────────────────────────┐
-│   Firebase Firestore     │
-│  (메타데이터, 메모리, 쿠키) │
-└──────────────────────────┘
 
-┌──────────────────────────┐
-│   Cloud Scheduler        │
-│   매일 06:40 KST         │──→ Cloud Run POST /api/generate
-└──────────────────────────┘
+## 3. 배포 결정
+
+### 3.1 프론트엔드
+- 플랫폼: Vercel
+- 프로젝트 루트: `frontend/`
+- 빌드: `npm run build`
+- 런타임: 일반 Next.js 빌드
+- 커스텀 도메인: `podcast.bubblelab.dev`
+
+### 3.2 백엔드
+- 플랫폼: Google Cloud Run
+- 이미지: `backend/Dockerfile`
+- 포트: `8080`
+- 인증: Firebase ID 토큰 + Scheduler OIDC
+- 권장 역할: 앱 API 전담
+
+### 3.3 왜 이 구조를 유지하는가
+- 이미 코드가 이 구조로 대부분 구현되어 있다
+- Vercel은 프론트 배포와 커스텀 도메인 운영에 적합하다
+- NotebookLM, Browserless, Firebase Admin, 장시간 오디오 생성은 Cloud Run 쪽이 더 자연스럽다
+- 리스크가 가장 낮다
+
+## 4. 프론트엔드 설계
+
+### 4.1 페이지 구조
+
+```text
+/login              Google 로그인
+/                   오늘의 팟캐스트, 상태 배너, 재생, 재시도
+/upload             소스 업로드/목록/삭제
+/memory             메모리 설정
+/settings           NotebookLM 세션 + 푸시 알림 설정
+/offline            오프라인 폴백
 ```
 
-## 2. 기술 스택
+### 4.2 인증 처리
+- Firebase Auth의 `signInWithRedirect()` 사용
+- 로그인 이후 브라우저에서 Cloud Run `POST /api/auth/verify` 호출
+- 백엔드는 ID 토큰 검증 후 화이트리스트 체크
+- 화이트리스트 거부 시 프론트는 즉시 로그아웃
 
-| 구성요소 | 기술 | 비고 |
-|---------|------|------|
-| 프론트엔드 | Next.js 14 (App Router) | PWA, Spotify 스타일 다크 UI |
-| 호스팅 | Firebase Hosting | 정적 export |
-| 백엔드 | Python FastAPI | Cloud Run 배포 |
-| 컨테이너 | Google Cloud Run | min 0, max 1 (단일 인스턴스, asyncio 병렬) |
-| 인증 | Firebase Auth | Google OAuth |
-| DB | Firebase Firestore | 메타데이터, 메모리, 쿠키 |
-| 파일 저장 | Firebase Storage | 소스 파일, 팟캐스트 오디오 |
-| 팟캐스트 | notebooklm-py 0.3.x | 비공식 NB API |
-| 스케줄링 | Cloud Scheduler | 일일 06:40 KST |
-| 알림 | FCM (Firebase Cloud Messaging) | PWA Push |
-| NB 재인증 | Browserless.io | 원격 Chromium |
-| 이미지→PDF | img2pdf | 서버사이드 변환 (코드 간소화를 위해 reportlab 대신 채택) |
+### 4.3 Vercel에서의 Firebase redirect 처리
 
-## 3. 데이터 모델 (Firestore)
+Vercel에서 `signInWithRedirect()`를 안정적으로 쓰기 위해 다음 전제를 둔다.
 
-### 3.1 users/{uid}
+- `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=podcast.bubblelab.dev`
+- `frontend/next.config.mjs`에서 `/__/auth/:path*`를 Firebase helper origin으로 rewrite
+- `FIREBASE_AUTH_HELPER_ORIGIN` 기본값은 `https://<project>.firebaseapp.com`
+- 서비스 워커는 `/__/` 네임스페이스를 가로채지 않는다
+
+이 조합이 맞아야 `https://podcast.bubblelab.dev/__/auth/handler`가 정상 동작한다.
+
+### 4.4 PWA
+- `manifest.json` 제공
+- `sw.js` 등록
+- 기본 app shell 캐시: `/`, `/offline`, `/manifest.json`
+- foreground FCM 수신 시 브라우저 알림 표시
+- 설치 프롬프트 제공
+
+## 5. 백엔드 설계
+
+### 5.1 라우터 구성
+
+| 영역 | 경로 |
+|------|------|
+| health | `GET /health` |
+| auth | `POST /api/auth/verify` |
+| sources | `POST /api/sources/upload`, `GET /api/sources`, `DELETE /api/sources/{source_id}` |
+| generation | `POST /api/generate`, `POST /api/generate/me` |
+| podcast | `GET /api/podcasts/today`, `POST /api/podcasts/{podcast_id}/feedback`, `POST /api/podcasts/{podcast_id}/downloaded` |
+| memory | `GET /api/memory`, `PUT /api/memory` |
+| NB session | `POST /api/nb-session/start-auth`, `GET /api/nb-session/poll/{session_id}`, `GET /api/nb-session/status` |
+| push | `POST /api/push-token`, `POST /api/remind-download` |
+
+### 5.2 인증 레이어
+- 사용자 API: Firebase ID 토큰 검증 + `ALLOWED_EMAILS` 화이트리스트
+- 내부 스케줄러 API: Google OIDC 토큰 검증 + `CLOUD_RUN_URL` audience 확인 + `SCHEDULER_SERVICE_ACCOUNT` 이메일 확인
+
+### 5.3 생성 파이프라인
+- 수집 윈도우: 전일 06:40 KST ~ 당일 06:40 KST
+- 사용자별 Firestore 상태 문서를 보고 중복 실행 방지
+- 유효한 PDF 소스만 NotebookLM에 전달
+- 생성 완료 후 Storage에 MP3 저장
+- 이전 날짜 오디오는 삭제
+- 실패 시 `retry_1`, `retry_2`, `failed` 상태로 관리
+
+### 5.4 NotebookLM 재인증
+- Browserless 세션 URL과 viewer URL은 환경변수 템플릿으로 생성
+- 프론트는 새 탭을 열고, 백엔드는 Browserless에 연결해 NotebookLM 로그인 완료를 폴링한다
+- 완료 시 `storage_state`를 암호화해 Firestore에 저장한다
+
+## 6. 데이터 모델
+
+### 6.1 `users/{uid}`
+
 ```json
 {
   "email": "user@gmail.com",
   "displayName": "사용자",
   "createdAt": "timestamp",
-  "fcmToken": "push_token_string",
+  "lastLoginAt": "timestamp",
+  "fcmToken": "token",
+  "fcmTokenUpdatedAt": "timestamp",
   "memory": {
-    "interests": "AI, 투자, 배터리 기술",
-    "preferredTone": "기술적 깊이 있지만 친근한 톤",
-    "preferredDepth": "전문가 수준",
-    "customInstructions": "자유 텍스트",
+    "interests": "AI, 투자",
+    "tone": "친근하지만 정확하게",
+    "preferredTone": "친근하지만 정확하게",
+    "depth": "실무자 관점",
+    "preferredDepth": "실무자 관점",
+    "custom": "핵심 요약 먼저",
+    "customInstructions": "핵심 요약 먼저",
     "feedbackHistory": [
-      { "date": "2026-03-18", "rating": "good" },
-      { "date": "2026-03-17", "rating": "normal" }
+      { "date": "2026-03-18", "rating": "good" }
     ]
   }
 }
 ```
 
-### 3.2 users/{uid}/nb_session (단일 문서)
+### 6.2 `users/{uid}/nb_session/current`
+
 ```json
 {
-  "storageState": "encrypted_json_string",
+  "storageState": "encrypted-string",
   "lastUpdated": "timestamp",
   "expiresAt": "timestamp",
-  "status": "valid | expiring_soon | expired"
+  "status": "valid",
+  "authFlow": "new_tab"
 }
 ```
 
-### 3.3 sources/{sourceId}
+파생 상태는 API에서 `valid | expiring_soon | expired | missing`으로 정규화한다.
+
+### 6.3 `users/{uid}/nb_auth_sessions/{sessionId}`
+
+```json
+{
+  "status": "pending | running | completed | timed_out | failed",
+  "viewerUrl": "https://...",
+  "authFlow": "new_tab",
+  "startedAt": "timestamp",
+  "updatedAt": "timestamp",
+  "completedAt": "timestamp",
+  "error": null
+}
+```
+
+추가로 `users/{uid}/nb_auth_sessions/current` 문서에 현재 진행 중인 세션을 복제해 빠르게 조회한다.
+
+### 6.4 `sources/{sourceId}`
+
 ```json
 {
   "uid": "user_uid",
-  "fileName": "screenshot_01.png",
+  "fileName": "capture.png",
   "originalType": "image/png",
   "convertedType": "application/pdf",
   "originalStoragePath": "sources/{uid}/{date}/{sourceId}.png",
   "convertedStoragePath": "sources/{uid}/{date}/{sourceId}.pdf",
-  // thumbnailPath: MVP 스킵. 파일 타입 아이콘(📄/🖼️)으로 대체. P1에서 썸네일 생성 검토
   "uploadedAt": "timestamp",
   "windowDate": "2026-03-19",
-  "status": "uploaded | processing | ready | used | deleted"
+  "status": "uploaded | ready | used"
 }
 ```
 
-### 3.4 podcasts/{podcastId}
+### 6.5 `podcasts/{uid-YYYY-MM-DD}`
+
 ```json
 {
   "uid": "user_uid",
   "date": "2026-03-19",
-  "sourceIds": ["sourceId1", "sourceId2"],
-  "sourceCount": 5,
+  "status": "generating | retry_1 | retry_2 | completed | failed | no_sources",
+  "sourceIds": ["source1", "source2"],
+  "sourceCount": 2,
   "audioPath": "podcasts/{uid}/2026-03-19.mp3",
   "durationSeconds": 600,
   "generatedAt": "timestamp",
-  "status": "pending | generating | retry_1 | retry_2 | completed | failed",
-  "instructionsUsed": "생성 시 사용된 instructions",
+  "instructionsUsed": "string",
   "error": null,
-  "feedback": null,
+  "feedback": "good",
   "downloaded": false
 }
 ```
 
-## 4. API 설계
+## 7. 주요 플로우
 
-### 4.1 소스 관리
-| 메서드 | 경로 | 설명 |
-|--------|------|------|
-| POST | `/api/sources/upload` | 파일 업로드 (multipart/form-data) |
-| GET | `/api/sources?date=YYYY-MM-DD` | 특정 윈도우 소스 목록 |
-| DELETE | `/api/sources/{sourceId}` | 소스 삭제 |
+### 7.1 로그인 플로우
+1. 사용자가 `podcast.bubblelab.dev/login`에서 Google 로그인을 시작한다.
+2. Firebase Redirect Helper가 `/__/auth/*` rewrite를 통해 처리된다.
+3. 로그인 성공 후 프론트가 Cloud Run `POST /api/auth/verify`를 호출한다.
+4. 백엔드가 화이트리스트를 검증하고 Firestore 사용자 문서를 upsert 한다.
 
-### 4.2 팟캐스트
-| 메서드 | 경로 | 설명 |
-|--------|------|------|
-| POST | `/api/generate` | 전체 사용자 생성 트리거 (Scheduler) |
-| POST | `/api/generate/me` | 개별 사용자 수동 생성 트리거 |
-| GET | `/api/podcast/today` | 오늘의 팟캐스트 정보 + signed URL |
-| POST | `/api/podcast/{id}/feedback` | 피드백 (good/normal/bad) |
-| POST | `/api/podcast/{id}/downloaded` | 다운로드 완료 표시 |
-| POST | `/api/remind-download` | 다운로드 리마인더 (Scheduler, 22:00 KST) |
+### 7.2 업로드 플로우
+1. 브라우저가 파일을 선택한다.
+2. 프론트는 XHR로 업로드 진행률을 표시한다.
+3. 백엔드는 MIME + 매직바이트 검증 후 Storage에 원본을 저장한다.
+4. 이미지면 PDF 변환본도 저장하고 `convertedStoragePath`를 기록한다.
+5. Firestore `sources` 문서가 생성된다.
 
-### 4.3 메모리
-| 메서드 | 경로 | 설명 |
-|--------|------|------|
-| GET | `/api/memory` | 현재 메모리 조회 |
-| PUT | `/api/memory` | 메모리 업데이트 |
+### 7.3 자동 생성 플로우
+1. Cloud Scheduler가 `POST /api/generate`를 호출한다.
+2. 백엔드는 `ALLOWED_EMAILS`에 있는 사용자 문서를 조회한다.
+3. 사용자별로 소스 윈도우, 메모리, NB 세션을 읽는다.
+4. NotebookLM에 소스를 추가하고 오디오를 생성한다.
+5. 결과 MP3를 Storage에 저장하고, Firestore 상태를 `completed`로 갱신한다.
+6. FCM으로 알림을 보낸다.
 
-### 4.4 NB 세션
-| 메서드 | 경로 | 설명 |
-|--------|------|------|
-| POST | `/api/nb-session/start-auth` | Browserless 세션 시작, 뷰어 URL 반환, 폴링 시작 |
-| GET | `/api/nb-session/poll/{session_id}` | 폴링 상태 조회 (프론트가 완료 여부 확인용) |
-| GET | `/api/nb-session/status` | 쿠키 유효성 상태 |
+### 7.4 수동 재생성 플로우
+1. 사용자가 앱 홈에서 `다시 생성`을 누른다.
+2. 백엔드는 Firestore transaction으로 해당 날짜의 생성 권한을 선점한다.
+3. 백그라운드 태스크로 동일한 생성 파이프라인을 실행한다.
 
-## 5. 핵심 플로우 상세
+### 7.5 재인증 플로우
+1. 사용자가 설정 화면에서 재인증을 시작한다.
+2. 백엔드는 Browserless 세션 정보를 만들고 Firestore에 pending 상태를 저장한다.
+3. 프론트는 새 탭으로 viewer URL을 연다.
+4. 서버가 NotebookLM 로그인 완료를 감지하면 storage state를 저장한다.
+5. 프론트는 poll API로 완료 상태를 확인한다.
 
-### 5.1 팟캐스트 생성 플로우
+### 7.6 푸시 토큰 동기화
+- 앱 진입, 포커스 복귀, foreground message 수신 시점에 FCM 토큰 동기화
+- 로컬 캐시 토큰과 다를 때만 `POST /api/push-token` 호출
 
-```
-Cloud Scheduler (06:40 KST)
-    │
-    ▼
-POST /api/generate (Scheduler → 전체 사용자 순회)
-    │
-    ├─ 0. 화이트리스트 전체 사용자 조회, 각 사용자별로 아래 플로우 병렬 실행
-    ├─ 0-1. 당일 팟캐스트 status가 completed/generating/retry_1/retry_2인 사용자 → 스킵 (동시 생성 방지)
-    ├─ 1. 소스 윈도우 내 소스 조회 (전일 06:40 ~ 당일 06:40)
-    ├─ 소스 0개 → 스킵, "소스 없음" 푸시 알림, 종료
-    │
-    ├─ 2. 사용자 메모리 로드 → instructions 구성
-    ├─ 3. NB 쿠키 로드 & 유효성 확인
-    │     만료 → 실패, "재인증 필요" 푸시
-    │
-    ├─ 4. notebooklm-py 실행
-    │     a. 노트북 생성
-    │     b. Storage에서 소스 다운로드 → 노트북에 전량 추가
-    │     c. generate_audio(instructions=...) 호출
-    │     d. wait_for_completion (타임아웃 20분)
-    │     e. download_audio → Storage 저장
-    │     f. 임시 노트북 삭제
-    │
-    ├─ 실패 → status: retry_1 또는 retry_2로 업데이트
-    │     Cloud Scheduler 재시도 정책으로 별도 요청 재호출 (최대 2회)
-    │     3회 실패 → status: failed, 수동 트리거 활성화
-    │
-    ├─ 5. 이전 날 팟캐스트 오디오 삭제
-    └─ 6. FCM 푸시 알림
-```
+## 8. 환경변수
 
-### 5.2 이미지→PDF 변환
+### 8.1 Vercel 프론트엔드
 
-업로드 시 동기 처리:
-1. 원본 이미지 Storage 저장
-2. `img2pdf.convert(image_bytes)` → PDF 바이트 생성
-3. PDF를 Storage 저장
-4. Firestore 소스 문서 업데이트
-
-### 5.3 Browserless.io 재인증
-
-```
-"재인증" 버튼 탭
-    │
-    ├─ 1. POST /api/nb-session/start-auth
-    │     → Browserless API로 원격 Chromium 세션 생성
-    │     → Playwright로 원격 브라우저에 connect, notebooklm.google.com으로 navigate
-    │     → 세션 뷰어 URL + 폴링 ID 반환
-    │
-    ├─ 2. 프론트에서 뷰어 URL 표시 (iframe 또는 새 탭)
-    │     → ⚠️ Google 로그인 페이지가 iframe을 차단할 가능성 높음 (X-Frame-Options: DENY)
-    │     → T-059 스파이크 결과에 따라 iframe / window.open() 팝업 / 새 탭 중 확정
-    │     → 새 탭 방식 시: 서버 폴링으로 완료 감지 후 원래 탭에서 상태 갱신
-    │     → 사용자가 Google 로그인 수행
-    │
-    ├─ 3. 서버가 Playwright로 로그인 완료 자동 감지 (폴링)
-    │     → 2초 간격으로 page.url() 확인
-    │     → URL이 notebooklm.google.com/* (로그인 후 리다이렉트)로 변경되면 로그인 완료 판정
-    │     → 타임아웃: 5분 (초과 시 세션 종료, 프론트에 실패 응답)
-    │     → 로그인 완료 시 browser.contexts[0].storage_state() 호출 → 쿠키/스토리지 추출
-    │     ※ 리스크: 폴링 동안 Browserless 세션 유지 필요. 무료 티어 시간 소모하지만
-    │       재인증이 월 1~2회이므로 문제 수준 아님
-    │
-    ├─ 4. 추출한 storage_state를 Fernet(AES) 암호화 → Firestore nb_session 문서 저장
-    │     → expiresAt: 현재 + 30일 (추정)
-    │     → status: "valid"
-    │
-    ├─ 5. Browserless 세션 종료 (browser.close())
-    └─ 6. 프론트에 "인증 완료" 응답 → iframe 닫기, StatusBanner 갱신
-```
-
-**구현 핵심 (Playwright 서버 코드)**:
-```python
-# start-auth 시 백그라운드 태스크로 폴링 시작
-async def poll_login_completion(browser, session_id: str):
-    """2초 간격으로 URL 체크, 로그인 완료 시 쿠키 추출"""
-    page = browser.contexts[0].pages[0]
-    timeout = 300  # 5분
-
-    for _ in range(timeout // 2):
-        await asyncio.sleep(2)
-        current_url = page.url
-        if "notebooklm.google.com" in current_url and "/login" not in current_url:
-            # 로그인 완료 감지
-            storage_state = await browser.contexts[0].storage_state()
-            encrypted = fernet.encrypt(json.dumps(storage_state).encode())
-            await save_to_firestore(session_id, encrypted)
-            await browser.close()
-            return True
-
-    # 타임아웃
-    await browser.close()
-    return False
-```
-
-### 5.4 메모리→Instructions 구성
-
-```python
-def build_instructions(memory: dict) -> str:
-    parts = ["한국어로 진행해주세요.", "10분 분량으로 만들어주세요."]
-
-    if memory.get("interests"):
-        parts.append(f"청취자 관심 분야: {memory['interests']}")
-    if memory.get("preferredTone"):
-        parts.append(f"톤: {memory['preferredTone']}")
-    if memory.get("preferredDepth"):
-        parts.append(f"깊이: {memory['preferredDepth']}")
-    if memory.get("customInstructions"):
-        parts.append(memory["customInstructions"])
-
-    recent = memory.get("feedbackHistory", [])[-10:]
-    if recent:
-        bad = sum(1 for f in recent if f["rating"] == "bad")
-        if bad >= 3:
-            parts.append("최근 피드백이 부정적입니다. 더 흥미롭게 만들어주세요.")
-
-    return " ".join(parts)
-```
-
-## 6. 프론트엔드 구조
-
-```
-app/
-├── layout.tsx              # 다크 테마, 하단 네비게이션
-├── page.tsx                # 메인: 오늘의 팟캐스트 + 플레이어
-├── upload/page.tsx         # 소스 업로드 & 목록
-├── memory/page.tsx         # 성향 메모리 설정
-├── settings/page.tsx       # NB 세션 관리, 계정
-├── components/
-│   ├── AudioPlayer.tsx     # 재생/일시정지, 시크바, 배속
-│   ├── SourceList.tsx      # 소스 목록 (파일타입 아이콘, 삭제)
-│   ├── UploadZone.tsx      # 파일 선택 / 카메라 촬영
-│   ├── StatusBanner.tsx    # NB 세션 상태 배너
-│   ├── FeedbackBar.tsx     # 좋았다/보통/별로
-│   └── BottomNav.tsx       # 하단 네비게이션
-├── lib/
-│   ├── firebase.ts         # Firebase 초기화
-│   ├── api.ts              # API 클라이언트
-│   └── auth.ts             # Auth 헬퍼
-└── public/
-    ├── manifest.json       # PWA 매니페스트
-    └── sw.js               # Service Worker (푸시, 백그라운드 재생)
-```
-
-## 7. 배포 구성
-
-### 7.1 Cloud Run
-- **이미지**: Python 3.11 + FastAPI + notebooklm-py + Playwright (라이브러리만, Chromium 미포함 — Browserless.io 원격 연결)
-- **메모리**: 1GB / **CPU**: 1 vCPU
-- **인스턴스**: min 0, max 1 (단일 인스턴스에서 asyncio로 5명 병렬 처리)
-- **타임아웃**: 25분
-- **환경변수**: `FIREBASE_PROJECT_ID`, `ALLOWED_EMAILS`, `NB_COOKIE_ENCRYPTION_KEY`, `BROWSERLESS_API_KEY`, `CLOUD_RUN_URL` (OIDC audience용)
-
-### 7.2 Cloud Scheduler
-- **생성 크론**: `40 6 * * *` (Asia/Seoul) → Cloud Run `POST /api/generate`
-- **다운로드 리마인더 크론**: `0 22 * * *` (Asia/Seoul) → Cloud Run `POST /api/remind-download`
-- **인증**: 서비스 어카운트 OIDC
-
-### 7.3 Dockerfile
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-# Chromium 바이너리 미설치: Browserless.io 원격 브라우저 사용
-# playwright 라이브러리만으로 browser.connect_over_cdp() 가능
-COPY . .
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
-```
-
-## 8. 보안
-
-- **사용자 인증**: Firebase Auth ID 토큰 검증 + 이메일 화이트리스트 (최대 5명, 모든 사용자 API)
-- **Scheduler 인증**: Cloud Scheduler → Cloud Run 호출 시 서비스 어카운트 OIDC 토큰 사용
-  - `/api/generate`, `/api/remind-download` 엔드포인트에 OIDC 검증 미들웨어 적용
-  - `google.oauth2.id_token.verify_oauth2_token()` 으로 Authorization 헤더의 OIDC 토큰 검증
-  - `audience`는 Cloud Run 서비스 URL (예: `https://podcast-xxxxx-run.app`)
-  - 검증 실패 시 403 반환 → 외부에서 임의 호출 방지
-  - 구현: `google-auth` 라이브러리 사용
-  ```python
-  from google.oauth2 import id_token
-  from google.auth.transport import requests
-
-  def verify_scheduler_token(authorization: str, expected_audience: str):
-      """Cloud Scheduler OIDC 토큰 검증"""
-      token = authorization.replace("Bearer ", "")
-      claim = id_token.verify_oauth2_token(
-          token, requests.Request(), audience=expected_audience
-      )
-      # claim["email"]이 Scheduler 서비스 어카운트인지 확인
-      return claim
-  ```
-- **NB 쿠키**: Fernet(AES) 암호화 후 Firestore 저장, 키는 환경변수 `NB_COOKIE_ENCRYPTION_KEY`
-- **CORS**: Firebase Hosting 도메인만 허용
-- **파일 업로드**: 최대 20MB/파일, PDF/이미지 MIME 검증
-
-## 9. 에러 처리
-
-| 에러 | 처리 |
+| 이름 | 용도 |
 |------|------|
-| NB 쿠키 만료 | 생성 중단, "재인증 필요" 푸시 |
-| Audio 생성 타임아웃/실패 | 재시도 2회 → 수동 트리거 |
-| 이미지→PDF 변환 실패 | 해당 소스 스킵, 나머지로 진행 |
-| Browserless 세션 실패 | 에러 표시, 재시도 유도 |
-| Storage 용량 초과 | 업로드 차단, 안내 |
-| 소스 0개 | 스킵, "소스 없음" 푸시 |
+| `NEXT_PUBLIC_FIREBASE_API_KEY` | Firebase Web SDK |
+| `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN` | 프로덕션에서는 `podcast.bubblelab.dev` |
+| `NEXT_PUBLIC_FIREBASE_PROJECT_ID` | Firebase 프로젝트 ID |
+| `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET` | Firebase Storage 버킷 |
+| `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID` | FCM sender ID |
+| `NEXT_PUBLIC_FIREBASE_APP_ID` | Firebase app ID |
+| `NEXT_PUBLIC_FIREBASE_VAPID_KEY` | Web Push VAPID 키 |
+| `NEXT_PUBLIC_API_BASE_URL` | Cloud Run API base URL |
+| `FIREBASE_AUTH_HELPER_ORIGIN` | 보통 `https://<project>.firebaseapp.com` |
+
+### 8.2 Cloud Run 백엔드
+
+| 이름 | 용도 |
+|------|------|
+| `GOOGLE_APPLICATION_CREDENTIALS` | 로컬 개발용 서비스 계정 키 경로 |
+| `ALLOWED_EMAILS` | 화이트리스트 이메일 목록 |
+| `CORS_ORIGINS` | 허용 origin. 프로덕션은 `https://podcast.bubblelab.dev` 포함 |
+| `CLOUD_RUN_URL` | Scheduler OIDC audience |
+| `SCHEDULER_SERVICE_ACCOUNT` | Scheduler가 사용할 서비스 계정 이메일 |
+| `NB_COOKIE_ENCRYPTION_KEY` | NotebookLM 세션 암호화 키 |
+| `BROWSERLESS_TOKEN` | Browserless 인증 토큰 |
+| `BROWSERLESS_CONNECT_URL_TEMPLATE` | CDP 연결 URL 템플릿 |
+| `BROWSERLESS_VIEWER_URL_TEMPLATE` | 사용자용 viewer URL 템플릿 |
+| `NB_AUTH_TARGET_URL` | 기본값 `https://notebooklm.google.com` |
+| `NB_AUTH_TIMEOUT_SECONDS` | 재인증 타임아웃 |
+| `AUDIO_TIMEOUT_SECONDS` | 오디오 생성 타임아웃 |
+| `GENERATE_MAX_CONCURRENCY` | 동시 생성 제한 |
+| `NB_SESSION_EXPIRING_SOON_DAYS` | 만료 임박 기준 일수 |
+
+## 9. 운영 체크포인트
+
+### 9.1 Vercel
+- 프로젝트 root를 `frontend`로 둔다
+- `STATIC_EXPORT=1`을 프로덕션 Vercel 환경에 넣지 않는다
+- `podcast.bubblelab.dev`를 Vercel 프로젝트에 연결한다
+
+### 9.2 Firebase Console
+- Authentication Authorized domains에 `podcast.bubblelab.dev` 추가
+- 필요 시 OAuth redirect handler 경로 허용
+
+### 9.3 Cloud Run
+- `CORS_ORIGINS=https://podcast.bubblelab.dev`
+- ADC 또는 서비스 계정 권한으로 Firestore, Storage, FCM 사용 가능해야 한다
+
+### 9.4 Cloud Scheduler
+- 생성 잡: `40 6 * * *` Asia/Seoul
+- 리마인더 잡: `0 22 * * *` Asia/Seoul
+- 두 잡 모두 OIDC로 Cloud Run 호출
+
+## 10. 알려진 리스크
+
+- Browserless 새 탭 플로우는 실제 모바일 기기에서 반드시 검증해야 한다
+- FCM Web Push는 브라우저별 제약이 있으므로 실사용 브라우저 범위를 정해야 한다
+- `notebooklm-py`와 쿠키 기반 인증은 외부 서비스 변경에 취약하다
+- 현재 API는 `run.app` 도메인을 사용하므로 CORS/운영환경 설정 실수가 가장 흔한 장애 원인이 된다

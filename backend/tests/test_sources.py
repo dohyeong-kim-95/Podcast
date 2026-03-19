@@ -1,11 +1,25 @@
+import asyncio
+from io import BytesIO
 import sys
+from contextlib import asynccontextmanager
 from unittest.mock import patch, MagicMock
 
+from fastapi import HTTPException, UploadFile
 from fastapi.testclient import TestClient
+
+_FIREBASE_INIT_PATCHER = patch("app.main.init_firebase", return_value=None)
+_FIREBASE_INIT_PATCHER.start()
 
 from app.main import app
 from app.services.storage import validate_file_content
 
+
+@asynccontextmanager
+async def _test_lifespan(_app):
+    yield
+
+
+app.router.lifespan_context = _test_lifespan
 client = TestClient(app)
 
 MOCK_USER = {
@@ -61,6 +75,19 @@ class TestUpload:
             assert response.status_code == 400
             assert "does not match" in response.json()["detail"]
 
+    def test_spill_upload_rejects_oversized_file(self):
+        from app.routers.sources import _spill_upload_to_tempfile
+
+        upload = UploadFile(filename="test.pdf", file=BytesIO(b"%PDF-1.4 abc"))
+
+        with patch("app.routers.sources.MAX_FILE_SIZE", 10):
+            try:
+                asyncio.run(_spill_upload_to_tempfile(upload))
+                assert False, "Expected HTTPException for oversized upload"
+            except HTTPException as exc:
+                assert exc.status_code == 400
+                assert "File size exceeds" in exc.detail
+
     @patch("app.services.storage._get_bucket")
     @patch("app.services.storage.get_firestore_client")
     def test_upload_pdf_success(self, mock_db, mock_bucket):
@@ -87,7 +114,7 @@ class TestUpload:
         assert data["originalStoragePath"] is not None
         assert data["convertedStoragePath"] is None
         assert data["status"] == "uploaded"
-        mock_blob.upload_from_string.assert_called_once()
+        mock_blob.upload_from_filename.assert_called_once()
         mock_doc_ref.set.assert_called_once()
 
     @patch("app.services.storage._get_bucket")

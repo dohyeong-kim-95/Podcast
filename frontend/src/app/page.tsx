@@ -5,8 +5,16 @@ import Link from "next/link";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import AudioPlayer from "@/components/AudioPlayer";
 import FeedbackBar from "@/components/FeedbackBar";
+import InstallPrompt from "@/components/InstallPrompt";
+import StatusBanner from "@/components/StatusBanner";
 import { useAuth } from "@/lib/auth-context";
-import { getTodayPodcast, triggerGenerate, type Podcast } from "@/lib/api";
+import {
+  getNbSessionStatus,
+  getTodayPodcast,
+  triggerGenerate,
+  type NbSessionStatusResponse,
+  type Podcast,
+} from "@/lib/api";
 
 export default function Home() {
   return (
@@ -19,6 +27,7 @@ export default function Home() {
 function MainContent() {
   const { user, signOut } = useAuth();
   const [podcast, setPodcast] = useState<Podcast | null>(null);
+  const [nbSession, setNbSession] = useState<NbSessionStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -26,8 +35,12 @@ function MainContent() {
   const fetchPodcast = useCallback(async () => {
     try {
       setError(null);
-      const res = await getTodayPodcast();
-      setPodcast(res.podcast);
+      const [podcastRes, nbSessionRes] = await Promise.all([
+        getTodayPodcast(),
+        getNbSessionStatus().catch(() => null),
+      ]);
+      setPodcast(podcastRes.podcast);
+      setNbSession(nbSessionRes);
     } catch {
       setError("팟캐스트 정보를 불러올 수 없습니다");
     } finally {
@@ -69,22 +82,26 @@ function MainContent() {
 
   return (
     <div className="min-h-screen bg-[#121212] text-white">
-      <header className="flex items-center justify-between px-4 py-3 border-b border-[#282828]">
+      <header className="sticky top-0 z-10 border-b border-[#282828] bg-[#121212]/95 px-4 py-3 backdrop-blur">
         <h1 className="text-lg font-bold">Daily Podcast</h1>
         <button
           onClick={signOut}
-          className="text-sm text-[#b3b3b3] hover:text-white transition-colors"
+          type="button"
+          className="min-h-10 rounded-full px-3 text-sm text-[#b3b3b3] transition-colors hover:bg-white/5 hover:text-white"
         >
           로그아웃
         </button>
       </header>
 
-      <main className="px-4 py-6 space-y-4">
+      <main className="mx-auto max-w-lg space-y-4 px-4 py-6">
         <div className="mb-2">
           <p className="text-[#b3b3b3] text-sm">
             {user?.displayName || user?.email}님, 안녕하세요
           </p>
         </div>
+
+        <StatusBanner session={nbSession} />
+        <InstallPrompt />
 
         {error && (
           <div className="bg-red-900/30 border border-red-800 rounded-lg px-4 py-3 text-sm text-red-300">
@@ -114,6 +131,28 @@ function MainContent() {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
           소스 업로드
+        </Link>
+
+        <Link
+          href="/memory"
+          className="flex items-center justify-center gap-2 w-full bg-[#181818] border border-[#282828] text-white font-semibold py-3 rounded-full hover:border-[#1DB954] transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.75a2.25 2.25 0 100 4.5 2.25 2.25 0 000-4.5z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6.94 4.94l1.06 1.06m8 8 1.06 1.06M4.94 17.06 6 16m12-8 1.06-1.06M12 2.25v1.5m0 16.5v1.5M2.25 12h1.5m16.5 0h1.5" />
+          </svg>
+          메모리 설정
+        </Link>
+
+        <Link
+          href="/settings"
+          className="flex items-center justify-center gap-2 w-full bg-[#181818] border border-[#282828] text-white font-semibold py-3 rounded-full hover:border-[#1DB954] transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317a1 1 0 011.35-.936l.094.04 1.304.652a1 1 0 00.894 0l1.304-.652a1 1 0 011.444.894v1.46a1 1 0 00.293.707l1.033 1.033a1 1 0 010 1.414l-1.033 1.033a1 1 0 00-.293.707v1.46a1 1 0 01-1.444.894l-1.304-.652a1 1 0 00-.894 0l-1.304.652a1 1 0 01-1.444-.894v-1.46a1 1 0 00-.293-.707L5.34 9.581a1 1 0 010-1.414l1.033-1.033a1 1 0 00.293-.707v-1.46a1 1 0 011.444-.894l1.304.652a1 1 0 00.894 0l.017-.008z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 11.25A2.25 2.25 0 1012 6.75a2.25 2.25 0 000 4.5z" />
+          </svg>
+          설정
         </Link>
       </main>
     </div>

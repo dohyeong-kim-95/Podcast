@@ -34,8 +34,9 @@ def test_verify_valid_token():
         "email": "test@gmail.com",
         "name": "Test User",
     }
-    with patch("app.middleware.auth.verify_id_token", return_value=mock_decoded):
-        with patch.dict("os.environ", {"ALLOWED_EMAILS": ""}):
+    with patch("app.middleware.auth.verify_id_token", return_value=mock_decoded), \
+         patch("app.routers.auth.upsert_user_profile"), \
+         patch.dict("os.environ", {"ALLOWED_EMAILS": ""}):
             response = client.post(
                 "/api/auth/verify",
                 headers={"Authorization": "Bearer valid-token"},
@@ -67,8 +68,9 @@ def test_verify_whitelist_allowed():
         "email": "allowed@gmail.com",
         "name": "Test User",
     }
-    with patch("app.middleware.auth.verify_id_token", return_value=mock_decoded):
-        with patch.dict("os.environ", {"ALLOWED_EMAILS": "allowed@gmail.com,other@gmail.com"}):
+    with patch("app.middleware.auth.verify_id_token", return_value=mock_decoded), \
+         patch("app.routers.auth.upsert_user_profile"), \
+         patch.dict("os.environ", {"ALLOWED_EMAILS": "allowed@gmail.com,other@gmail.com"}):
             response = client.post(
                 "/api/auth/verify",
                 headers={"Authorization": "Bearer valid-token"},

@@ -1,6 +1,10 @@
 import { getFirebaseAuth } from "./firebase";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
+const API_BASE_URL = (
+  process.env.NEXT_PUBLIC_API_BASE_URL ||
+  process.env.NEXT_PUBLIC_API_BASE ||
+  "http://localhost:8080"
+).replace(/\/+$/, "");
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
   const user = getFirebaseAuth().currentUser;
@@ -36,6 +40,19 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   return res.json();
 }
 
+export async function apiPut<T>(path: string, body: unknown): Promise<T> {
+  const headers = await getAuthHeaders();
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`API error: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function apiDelete<T>(path: string): Promise<T> {
   const headers = await getAuthHeaders();
   const res = await fetch(`${API_BASE_URL}${path}`, {
@@ -48,7 +65,11 @@ export async function apiDelete<T>(path: string): Promise<T> {
   return res.json();
 }
 
-export async function apiUpload<T>(path: string, file: File): Promise<T> {
+export async function apiUpload<T>(
+  path: string,
+  file: File,
+  onProgress?: (uploadedBytes: number) => void,
+): Promise<T> {
   const user = getFirebaseAuth().currentUser;
   if (!user) {
     throw new Error("Not authenticated");
@@ -57,16 +78,54 @@ export async function apiUpload<T>(path: string, file: File): Promise<T> {
   const formData = new FormData();
   formData.append("file", file);
 
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: formData,
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_BASE_URL}${path}`);
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.responseType = "json";
+
+    xhr.upload.onprogress = (event) => {
+      if (!onProgress || !event.lengthComputable) {
+        return;
+      }
+
+      onProgress(Math.min(file.size, event.loaded));
+    };
+
+    xhr.onload = () => {
+      let response = xhr.response;
+      if (response === null || response === undefined) {
+        if (xhr.responseText) {
+          try {
+            response = JSON.parse(xhr.responseText);
+          } catch {
+            response = xhr.responseText;
+          }
+        } else {
+          response = null;
+        }
+      }
+
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(response as T);
+        return;
+      }
+
+      const message =
+        typeof response === "string"
+          ? response
+          : response && typeof response === "object" && "detail" in response
+            ? String(response.detail)
+            : xhr.responseText || `API error: ${xhr.status}`;
+      reject(new Error(message));
+    };
+
+    xhr.onerror = () => {
+      reject(new Error("Network error"));
+    };
+
+    xhr.send(formData);
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `API error: ${res.status}`);
-  }
-  return res.json();
 }
 
 export async function verifyAuth(): Promise<{ uid: string; email: string; name: string }> {
@@ -86,8 +145,11 @@ export interface Source {
   status: string;
 }
 
-export async function uploadSource(file: File): Promise<Source> {
-  return apiUpload("/api/sources/upload", file);
+export async function uploadSource(
+  file: File,
+  onProgress?: (uploadedBytes: number) => void,
+): Promise<Source> {
+  return apiUpload("/api/sources/upload", file, onProgress);
 }
 
 export async function listSources(date?: string): Promise<{ date: string; sources: Source[] }> {
@@ -134,4 +196,76 @@ export async function markDownloaded(podcastId: string): Promise<void> {
 
 export async function triggerGenerate(): Promise<{ status: string; date: string; podcastId: string }> {
   return apiPost("/api/generate/me");
+}
+
+export interface FeedbackHistoryItem {
+  date: string;
+  rating: string;
+}
+
+export interface MemorySettings {
+  interests: string;
+  tone: string;
+  depth: string;
+  custom: string;
+  feedbackHistory: FeedbackHistoryItem[];
+}
+
+export interface MemoryUpdate {
+  interests: string;
+  tone: string;
+  depth: string;
+  custom: string;
+}
+
+export async function getMemory(): Promise<MemorySettings> {
+  return apiGet("/api/memory");
+}
+
+export async function updateMemory(memory: MemoryUpdate): Promise<MemorySettings> {
+  return apiPut("/api/memory", memory);
+}
+
+export type NbSessionState = "valid" | "expiring_soon" | "expired" | "missing";
+export type NbAuthSessionState = "pending" | "completed" | "failed" | "timed_out";
+
+export interface NbAuthSessionStatus {
+  sessionId: string;
+  status: NbAuthSessionState;
+  viewerUrl?: string | null;
+  authFlow?: string | null;
+  error?: string | null;
+  completedAt?: string | null;
+}
+
+export interface NbSessionStatusResponse {
+  status: NbSessionState;
+  authFlow?: string | null;
+  expiresAt?: string | null;
+  lastUpdated?: string | null;
+  authSession?: NbAuthSessionStatus | null;
+}
+
+export interface StartNbSessionAuthResponse extends NbAuthSessionStatus {
+  viewerUrl: string;
+}
+
+export async function getNbSessionStatus(): Promise<NbSessionStatusResponse> {
+  return apiGet("/api/nb-session/status");
+}
+
+export async function startNbSessionAuth(): Promise<StartNbSessionAuthResponse> {
+  return apiPost("/api/nb-session/start-auth");
+}
+
+export async function pollNbSessionAuth(sessionId: string): Promise<NbAuthSessionStatus> {
+  return apiGet(`/api/nb-session/poll/${sessionId}`);
+}
+
+export interface RegisterPushTokenResponse {
+  registered: boolean;
+}
+
+export async function registerPushToken(token: string): Promise<RegisterPushTokenResponse> {
+  return apiPost("/api/push-token", { token });
 }

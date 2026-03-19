@@ -7,17 +7,26 @@ import json
 import logging
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
+from firebase_admin import firestore
 
 from app.services.firebase import get_firestore_client
 
 logger = logging.getLogger(__name__)
 
-# Audio generation timeout: 20 minutes
-AUDIO_TIMEOUT_SECONDS = 20 * 60
+def _load_audio_timeout_seconds() -> int:
+    raw = os.getenv("AUDIO_TIMEOUT_SECONDS", str(20 * 60))
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning("Invalid AUDIO_TIMEOUT_SECONDS=%r, falling back to 1200", raw)
+        return 20 * 60
+
+
+AUDIO_TIMEOUT_SECONDS = _load_audio_timeout_seconds()
 
 
 def _get_fernet() -> Fernet:
@@ -43,6 +52,66 @@ def decrypt_storage_state(encrypted: str) -> dict:
         raise ValueError(f"NB session storage state is not valid JSON: {e}") from e
 
 
+def encrypt_storage_state(storage_state: dict[str, Any]) -> str:
+    """Encrypt NotebookLM storage state for Firestore persistence."""
+    f = _get_fernet()
+    payload = json.dumps(storage_state).encode()
+    return f.encrypt(payload).decode()
+
+
+def _normalize_expires_at(expires_at: Any) -> datetime | None:
+    if expires_at is None or not hasattr(expires_at, "timestamp"):
+        return None
+    return expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+
+
+def derive_nb_session_status(expires_at: Any, status: str = "") -> str:
+    """Derive a stable status for current NB session metadata."""
+    if status == "expired":
+        return "expired"
+
+    normalized = _normalize_expires_at(expires_at)
+    if normalized is None:
+        return status or "unknown"
+
+    now = datetime.now(timezone.utc)
+    if normalized <= now:
+        return "expired"
+
+    expiring_soon_days = int(os.getenv("NB_SESSION_EXPIRING_SOON_DAYS", "7"))
+    if normalized <= now + timedelta(days=expiring_soon_days):
+        return "expiring_soon"
+
+    return "valid"
+
+
+async def save_nb_session(
+    uid: str,
+    storage_state: dict[str, Any],
+    *,
+    auth_flow: str = "new_tab",
+    expires_in_days: int = 30,
+) -> dict[str, Any]:
+    """Persist the current NB session for a user."""
+    db = get_firestore_client()
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(days=expires_in_days)
+    encrypted = encrypt_storage_state(storage_state)
+    data = {
+        "storageState": encrypted,
+        "lastUpdated": firestore.SERVER_TIMESTAMP,
+        "expiresAt": expires_at,
+        "status": "valid",
+        "authFlow": auth_flow,
+    }
+    db.collection("users").document(uid).collection("nb_session").document("current").set(data, merge=True)
+    return {
+        "status": "valid",
+        "expiresAt": expires_at,
+        "authFlow": auth_flow,
+    }
+
+
 async def load_nb_session(uid: str) -> dict[str, Any]:
     """Load and validate NB session from Firestore.
 
@@ -60,7 +129,7 @@ async def load_nb_session(uid: str) -> dict[str, Any]:
         raise ValueError("NB session not found")
 
     data = doc.to_dict()
-    status = data.get("status", "")
+    status = derive_nb_session_status(data.get("expiresAt"), data.get("status", ""))
     if status == "expired":
         raise ValueError("NB session expired (status)")
 
@@ -83,6 +152,8 @@ async def load_nb_session(uid: str) -> dict[str, Any]:
         "storageState": storage_state,
         "status": status,
         "expiresAt": expires_at,
+        "authFlow": data.get("authFlow", ""),
+        "lastUpdated": data.get("lastUpdated"),
     }
 
 

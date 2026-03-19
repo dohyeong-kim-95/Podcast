@@ -33,7 +33,11 @@ const AuthContext = createContext<AuthContextType>({
   signOut: async () => {},
 });
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8080";
+const API_BASE = (
+  process.env.NEXT_PUBLIC_API_BASE_URL ||
+  process.env.NEXT_PUBLIC_API_BASE ||
+  "http://localhost:8080"
+).replace(/\/+$/, "");
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);

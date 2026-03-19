@@ -7,8 +7,29 @@
   --foreground: #ffffff;
 }
 
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background:
+    radial-gradient(circle at top, rgba(29, 185, 84, 0.08), transparent 30%),
+    #121212;
+}
+
 body {
   color: var(--foreground);
   background: var(--background);
   font-family: Arial, Helvetica, sans-serif;
+  min-height: 100vh;
+  margin: 0;
+  -webkit-tap-highlight-color: transparent;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+textarea,
+a {
+  touch-action: manipulation;
 }

@@ -19,7 +19,8 @@ from pydantic import BaseModel
 from app.middleware.auth import get_current_user, verify_scheduler_token
 from app.services.firebase import get_firestore_client
 from app.services.instructions import build_instructions
-from app.services.notebook import NotebookLMClient, load_nb_session
+from app.services.notifications import send_push_to_user
+from app.services.notebook import AUDIO_TIMEOUT_SECONDS, NotebookLMClient, load_nb_session
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,15 @@ _SKIP_STATUSES = {"completed", "generating", "retry_1", "retry_2", "no_sources"}
 
 def _today_kst() -> str:
     return datetime.now(KST).strftime("%Y-%m-%d")
+
+
+def _generate_concurrency_limit() -> int:
+    raw = os.getenv("GENERATE_MAX_CONCURRENCY", "4")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning("Invalid GENERATE_MAX_CONCURRENCY=%r, falling back to 4", raw)
+        return 4
 
 
 def _window_cutoff(date_str: str) -> tuple[datetime, datetime]:
@@ -140,6 +150,14 @@ async def _delete_previous_audio(uid: str, today_str: str):
         logger.info("Deleted old podcast audio: %s", old_path)
 
 
+def _notify_user(uid: str, *, title: str, body: str, link: str = "/") -> None:
+    """Best-effort push delivery for generation events."""
+    try:
+        send_push_to_user(uid, title=title, body=body, link=link)
+    except Exception as exc:
+        logger.warning("Push notification failed for user %s: %s", uid, exc)
+
+
 async def _generate_for_user(uid: str, date_str: str) -> dict:
     """Run the full podcast generation pipeline for a single user.
 
@@ -177,6 +195,11 @@ async def _generate_for_user(uid: str, date_str: str) -> dict:
             generatedAt=firestore.SERVER_TIMESTAMP,
         )
         logger.info("No sources for user %s on %s, skipping", uid, date_str)
+        _notify_user(
+            uid,
+            title="오늘은 소스가 없어요",
+            body="내일 아침 팟캐스트를 위해 오늘 소스를 업로드해 보세요.",
+        )
         return {"uid": uid, "skipped": True, "reason": "no_sources"}
 
     source_ids = [s["sourceId"] for s in sources]
@@ -196,6 +219,12 @@ async def _generate_for_user(uid: str, date_str: str) -> dict:
             generatedAt=firestore.SERVER_TIMESTAMP,
         )
         logger.error("NB session error for user %s: %s", uid, e)
+        _notify_user(
+            uid,
+            title="NotebookLM 세션 재인증이 필요합니다",
+            body="세션이 만료되었거나 유효하지 않습니다. 앱에서 다시 로그인해 주세요.",
+            link="/settings",
+        )
         return {"uid": uid, "error": str(e)}
 
     # Download source PDFs
@@ -224,7 +253,10 @@ async def _generate_for_user(uid: str, date_str: str) -> dict:
             for pdf_path in pdf_paths:
                 await nb_client.add_source(notebook_id, pdf_path)
 
-            mp3_bytes = await nb_client.generate_audio(notebook_id, instructions)
+            mp3_bytes = await asyncio.wait_for(
+                nb_client.generate_audio(notebook_id, instructions),
+                timeout=AUDIO_TIMEOUT_SECONDS,
+            )
 
             # Upload mp3 to Storage
             audio_path = f"podcasts/{uid}/{date_str}.mp3"
@@ -259,7 +291,21 @@ async def _generate_for_user(uid: str, date_str: str) -> dict:
             await _delete_previous_audio(uid, date_str)
 
             logger.info("Podcast generated for user %s: %s", uid, audio_path)
+            _notify_user(
+                uid,
+                title="오늘의 팟캐스트가 준비됐어요",
+                body="앱을 열어 바로 재생하거나 다운로드할 수 있습니다.",
+            )
             return {"uid": uid, "status": "completed", "audioPath": audio_path}
+
+        except asyncio.TimeoutError:
+            await _update_podcast_status(
+                podcast_id,
+                "failed",
+                error="audio_timeout",
+            )
+            logger.error("Audio generation timed out for user %s after %ss", uid, AUDIO_TIMEOUT_SECONDS)
+            return {"uid": uid, "error": "audio_timeout", "status": "failed"}
 
         except Exception as e:
             # Handle retry progression
@@ -324,7 +370,13 @@ async def generate_all(
         return {"status": "no_users_found", "date": date_str}
 
     # Run generation in parallel for all users
-    tasks = [_generate_for_user(u["uid"], date_str) for u in users]
+    semaphore = asyncio.Semaphore(_generate_concurrency_limit())
+
+    async def _run_generation(uid: str):
+        async with semaphore:
+            return await _generate_for_user(uid, date_str)
+
+    tasks = [_run_generation(u["uid"]) for u in users]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     summary = []
@@ -465,17 +517,25 @@ async def submit_feedback(
 
     doc_ref.update({"feedback": body.rating})
 
-    # Also append to user's feedback history in memory
+    # Update only feedbackHistory so concurrent memory saves do not overwrite
+    # interests/tone/depth/custom settings.
     date_str = data.get("date", _today_kst())
     user_ref = db.collection("users").document(uid)
-    user_doc = user_ref.get()
-    if user_doc.exists:
-        user_data = user_doc.to_dict()
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _append_feedback_history(txn, ref):
+        snapshot = ref.get(transaction=txn)
+        user_data = snapshot.to_dict() if snapshot.exists else {}
         memory = user_data.get("memory", {})
-        history = memory.get("feedbackHistory", [])
+        history = list(memory.get("feedbackHistory", []))
         history.append({"date": date_str, "rating": body.rating})
-        # Keep only last 20 entries
-        memory["feedbackHistory"] = history[-20:]
-        user_ref.update({"memory": memory})
+        txn.set(
+            ref,
+            {"memory": {"feedbackHistory": history[-20:]}},
+            merge=True,
+        )
+
+    _append_feedback_history(transaction, user_ref)
 
     return {"podcastId": podcast_id, "feedback": body.rating}

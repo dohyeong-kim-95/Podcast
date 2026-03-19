@@ -3,10 +3,10 @@ service firebase.storage {
   match /b/{bucket}/o {
     // Sources: user can upload/read/delete own files
     match /sources/{userId}/{allPaths=**} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-      allow write: if request.auth != null
-                   && request.auth.uid == userId
-                   && request.resource.size < 20 * 1024 * 1024; // 20MB limit
+      allow read, delete: if request.auth != null && request.auth.uid == userId;
+      allow create, update: if request.auth != null
+                            && request.auth.uid == userId
+                            && request.resource.size < 20 * 1024 * 1024; // 20MB limit
     }
 
     // Podcasts: user can read own files, server writes

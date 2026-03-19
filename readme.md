@@ -16,7 +16,7 @@
 |---------|------|
 | 프론트엔드 | Next.js 14 PWA (Spotify 스타일 다크 UI) |
 | 호스팅 | Firebase Hosting |
-| 백엔드 | Python FastAPI, Google Cloud Run |
+| 백엔드 | Python FastAPI, Google Cloud Run (max 5 인스턴스) |
 | 인증 | Firebase Auth (Google OAuth) |
 | DB | Firebase Firestore |
 | 파일 저장 | Firebase Storage |
@@ -90,7 +90,7 @@ gcloud run deploy podcast-api \
   --timeout 1500 \
   --memory 1Gi \
   --min-instances 0 \
-  --max-instances 1
+  --max-instances 5
 
 # Firebase Hosting 배포
 cd frontend
@@ -103,7 +103,7 @@ firebase deploy --only hosting
 - **notebooklm-py**는 비공식 라이브러리로, Google API 변경 시 서비스 중단 가능
 - NB 세션 쿠키는 수 주~90일 주기로 만료되므로 주기적 재인증 필요
 - Firebase Spark(무료) 플랜 한도: Storage 5GB, Firestore 1GB
-- 1~2명 개인 프로젝트 용도
+- 최대 5명 소규모 그룹 프로젝트 용도
 
 ## 문서
 

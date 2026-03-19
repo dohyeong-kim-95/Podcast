@@ -44,7 +44,7 @@
 | 프론트엔드 | Next.js 14 (App Router) | PWA, Spotify 스타일 다크 UI |
 | 호스팅 | Firebase Hosting | 정적 export |
 | 백엔드 | Python FastAPI | Cloud Run 배포 |
-| 컨테이너 | Google Cloud Run | min 0, max 1 |
+| 컨테이너 | Google Cloud Run | min 0, max 5 (사용자당 1) |
 | 인증 | Firebase Auth | Google OAuth |
 | DB | Firebase Firestore | 메타데이터, 메모리, 쿠키 |
 | 파일 저장 | Firebase Storage | 소스 파일, 팟캐스트 오디오 |
@@ -114,7 +114,8 @@
   "status": "pending | generating | retry_1 | retry_2 | completed | failed",
   "instructionsUsed": "생성 시 사용된 instructions",
   "error": null,
-  "feedback": null
+  "feedback": null,
+  "downloaded": false
 }
 ```
 
@@ -130,9 +131,11 @@
 ### 4.2 팟캐스트
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
-| POST | `/api/generate` | 생성 트리거 (Scheduler 또는 수동) |
+| POST | `/api/generate` | 전체 사용자 생성 트리거 (Scheduler) |
+| POST | `/api/generate/me` | 개별 사용자 수동 생성 트리거 |
 | GET | `/api/podcast/today` | 오늘의 팟캐스트 정보 + signed URL |
 | POST | `/api/podcast/{id}/feedback` | 피드백 (good/normal/bad) |
+| POST | `/api/remind-download` | 다운로드 리마인더 (Scheduler, 22:00 KST) |
 
 ### 4.3 메모리
 | 메서드 | 경로 | 설명 |
@@ -155,9 +158,10 @@
 Cloud Scheduler (06:40 KST)
     │
     ▼
-POST /api/generate
+POST /api/generate (Scheduler → 전체 사용자 순회)
     │
-    ├─ 1. 소스 윈도우 내 소스 조회 (전일 07:00 ~ 당일 06:00)
+    ├─ 0. 화이트리스트 전체 사용자 조회, 각 사용자별로 아래 플로우 병렬 실행
+    ├─ 1. 소스 윈도우 내 소스 조회 (전일 06:40 ~ 당일 06:40)
     ├─ 소스 0개 → 스킵, "소스 없음" 푸시 알림, 종료
     │
     ├─ 2. 사용자 메모리 로드 → instructions 구성
@@ -172,7 +176,8 @@ POST /api/generate
     │     e. download_audio → Storage 저장
     │     f. 임시 노트북 삭제
     │
-    ├─ 실패 → 재시도 (최대 2회)
+    ├─ 실패 → status: retry_1 또는 retry_2로 업데이트
+    │     Cloud Scheduler 재시도 정책으로 별도 요청 재호출 (최대 2회)
     │     3회 실패 → status: failed, 수동 트리거 활성화
     │
     ├─ 5. 이전 날 팟캐스트 오디오 삭제
@@ -260,13 +265,13 @@ app/
 ### 7.1 Cloud Run
 - **이미지**: Python 3.11 + FastAPI + notebooklm-py + Playwright Chromium
 - **메모리**: 1GB / **CPU**: 1 vCPU
-- **인스턴스**: min 0, max 1
+- **인스턴스**: min 0, max 5 (최대 5명 동시 생성)
 - **타임아웃**: 25분
 - **환경변수**: `FIREBASE_PROJECT_ID`, `ALLOWED_EMAILS`, `NB_COOKIE_ENCRYPTION_KEY`, `BROWSERLESS_API_KEY`
 
 ### 7.2 Cloud Scheduler
-- **크론**: `40 6 * * *` (Asia/Seoul)
-- **대상**: Cloud Run `/api/generate`
+- **생성 크론**: `40 6 * * *` (Asia/Seoul) → Cloud Run `POST /api/generate`
+- **다운로드 리마인더 크론**: `0 22 * * *` (Asia/Seoul) → Cloud Run `POST /api/remind-download`
 - **인증**: 서비스 어카운트 OIDC
 
 ### 7.3 Dockerfile
@@ -288,7 +293,7 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
 
 ## 8. 보안
 
-- Firebase Auth ID 토큰 검증 + 이메일 화이트리스트 (모든 API)
+- Firebase Auth ID 토큰 검증 + 이메일 화이트리스트 (최대 5명, 모든 API)
 - NB 쿠키: Fernet(AES) 암호화 후 Firestore 저장, 키는 환경변수
 - Scheduler → Cloud Run: 서비스 어카운트 OIDC
 - CORS: Firebase Hosting 도메인만 허용

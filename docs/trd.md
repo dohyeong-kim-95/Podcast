@@ -93,7 +93,8 @@
   "fileName": "screenshot_01.png",
   "originalType": "image/png",
   "convertedType": "application/pdf",
-  "storagePath": "sources/{uid}/{date}/{sourceId}.pdf",
+  "originalStoragePath": "sources/{uid}/{date}/{sourceId}.png",
+  "convertedStoragePath": "sources/{uid}/{date}/{sourceId}.pdf",
   // thumbnailPath: MVP 스킵. 파일 타입 아이콘(📄/🖼️)으로 대체. P1에서 썸네일 생성 검토
   "uploadedAt": "timestamp",
   "windowDate": "2026-03-19",

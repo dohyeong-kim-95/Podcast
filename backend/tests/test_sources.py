@@ -1,10 +1,10 @@
-import io
-from unittest.mock import patch, MagicMock, PropertyMock
+import sys
+from unittest.mock import patch, MagicMock
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.storage import validate_file_content
 
 client = TestClient(app)
 
@@ -50,6 +50,17 @@ class TestUpload:
             assert response.status_code == 400
             assert "Empty file" in response.json()["detail"]
 
+    def test_upload_magic_bytes_mismatch(self):
+        """File claims to be PDF but content is not."""
+        with _auth_patch(), _env_patch():
+            response = client.post(
+                "/api/sources/upload",
+                headers=AUTH_HEADERS,
+                files={"file": ("fake.pdf", b"not a pdf at all", "application/pdf")},
+            )
+            assert response.status_code == 400
+            assert "does not match" in response.json()["detail"]
+
     @patch("app.services.storage._get_bucket")
     @patch("app.services.storage.get_firestore_client")
     def test_upload_pdf_success(self, mock_db, mock_bucket):
@@ -73,6 +84,8 @@ class TestUpload:
         data = response.json()
         assert data["fileName"] == "test.pdf"
         assert data["originalType"] == "application/pdf"
+        assert data["originalStoragePath"] is not None
+        assert data["convertedStoragePath"] is None
         assert data["status"] == "uploaded"
         mock_blob.upload_from_string.assert_called_once()
         mock_doc_ref.set.assert_called_once()
@@ -93,7 +106,6 @@ class TestUpload:
         # Minimal valid PNG
         png_content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
 
-        import sys
         with _auth_patch(), _env_patch(), patch.dict(sys.modules, {"img2pdf": mock_img2pdf}):
             response = client.post(
                 "/api/sources/upload",
@@ -105,8 +117,39 @@ class TestUpload:
         data = response.json()
         assert data["originalType"] == "image/png"
         assert data["convertedType"] == "application/pdf"
+        assert data["convertedStoragePath"] is not None
+        assert data["originalStoragePath"] is not None
         assert data["status"] == "ready"
         mock_img2pdf.convert.assert_called_once()
+
+
+class TestValidateFileContent:
+    def test_valid_pdf(self):
+        assert validate_file_content(b"%PDF-1.4 content", "application/pdf") is True
+
+    def test_invalid_pdf(self):
+        assert validate_file_content(b"not a pdf", "application/pdf") is False
+
+    def test_valid_png(self):
+        assert validate_file_content(b"\x89PNG\r\n\x1a\n" + b"\x00" * 10, "image/png") is True
+
+    def test_invalid_png(self):
+        assert validate_file_content(b"\x00\x00\x00\x00", "image/png") is False
+
+    def test_valid_jpeg(self):
+        assert validate_file_content(b"\xff\xd8\xff\xe0", "image/jpeg") is True
+
+    def test_invalid_jpeg(self):
+        assert validate_file_content(b"\x00\x00\x00", "image/jpeg") is False
+
+    def test_valid_webp(self):
+        assert validate_file_content(b"RIFF\x00\x00\x00\x00WEBP", "image/webp") is True
+
+    def test_invalid_webp_no_webp_marker(self):
+        assert validate_file_content(b"RIFF\x00\x00\x00\x00NOPE", "image/webp") is False
+
+    def test_unknown_type(self):
+        assert validate_file_content(b"anything", "text/plain") is False
 
 
 class TestListSources:
@@ -170,7 +213,7 @@ class TestDeleteSource:
         mock_doc_ref = MagicMock()
         mock_doc = MagicMock()
         mock_doc.exists = True
-        mock_doc.to_dict.return_value = {"uid": "other-uid", "storagePath": "some/path"}
+        mock_doc.to_dict.return_value = {"uid": "other-uid"}
         mock_doc_ref.get.return_value = mock_doc
         mock_db.return_value.collection.return_value.document.return_value = mock_doc_ref
 
@@ -189,8 +232,9 @@ class TestDeleteSource:
         mock_doc.exists = True
         mock_doc.to_dict.return_value = {
             "uid": "test-uid",
-            "storagePath": "sources/test-uid/2026-03-19/abc.pdf",
-            "originalType": "application/pdf",
+            "originalStoragePath": "sources/test-uid/2026-03-19/abc.png",
+            "convertedStoragePath": "sources/test-uid/2026-03-19/abc.pdf",
+            "originalType": "image/png",
         }
         mock_doc_ref.get.return_value = mock_doc
         mock_db.return_value.collection.return_value.document.return_value = mock_doc_ref
@@ -207,5 +251,37 @@ class TestDeleteSource:
 
         assert response.status_code == 200
         assert response.json()["deleted"] is True
-        mock_blob.delete.assert_called_once()
+        # Both original and converted blobs should be deleted
+        assert mock_blob.delete.call_count == 2
+        mock_doc_ref.delete.assert_called_once()
+
+    @patch("app.services.storage._get_bucket")
+    @patch("app.services.storage.get_firestore_client")
+    def test_delete_pdf_only_one_blob(self, mock_db, mock_bucket):
+        """PDF-only source has no convertedStoragePath."""
+        mock_doc_ref = MagicMock()
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        mock_doc.to_dict.return_value = {
+            "uid": "test-uid",
+            "originalStoragePath": "sources/test-uid/2026-03-19/abc.pdf",
+            "convertedStoragePath": None,
+            "originalType": "application/pdf",
+        }
+        mock_doc_ref.get.return_value = mock_doc
+        mock_db.return_value.collection.return_value.document.return_value = mock_doc_ref
+
+        mock_blob = MagicMock()
+        mock_blob.exists.return_value = True
+        mock_bucket.return_value.blob.return_value = mock_blob
+
+        with _auth_patch(), _env_patch():
+            response = client.delete(
+                "/api/sources/abc123",
+                headers=AUTH_HEADERS,
+            )
+
+        assert response.status_code == 200
+        # Only original blob deleted (convertedStoragePath is None)
+        assert mock_blob.delete.call_count == 1
         mock_doc_ref.delete.assert_called_once()

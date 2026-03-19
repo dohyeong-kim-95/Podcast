@@ -79,7 +79,8 @@ export interface Source {
   fileName: string;
   originalType: string;
   convertedType: string | null;
-  storagePath: string;
+  originalStoragePath: string;
+  convertedStoragePath: string | null;
   uploadedAt: string;
   windowDate: string;
   status: string;

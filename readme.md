@@ -16,7 +16,7 @@
 |---------|------|
 | 프론트엔드 | Next.js 14 PWA (Spotify 스타일 다크 UI) |
 | 호스팅 | Firebase Hosting |
-| 백엔드 | Python FastAPI, Google Cloud Run (max 5 인스턴스) |
+| 백엔드 | Python FastAPI, Google Cloud Run (단일 인스턴스, asyncio 병렬) |
 | 인증 | Firebase Auth (Google OAuth) |
 | DB | Firebase Firestore |
 | 파일 저장 | Firebase Storage |
@@ -77,6 +77,7 @@ GOOGLE_APPLICATION_CREDENTIALS=path/to/service-account.json
 ALLOWED_EMAILS=user1@gmail.com,user2@gmail.com
 NB_COOKIE_ENCRYPTION_KEY=your-fernet-key
 BROWSERLESS_API_KEY=your-browserless-key
+CLOUD_RUN_URL=https://podcast-xxxxx-run.app  # Scheduler OIDC audience
 ```
 
 ## 배포
@@ -90,7 +91,7 @@ gcloud run deploy podcast-api \
   --timeout 1500 \
   --memory 1Gi \
   --min-instances 0 \
-  --max-instances 5
+  --max-instances 1
 
 # Firebase Hosting 배포
 cd frontend

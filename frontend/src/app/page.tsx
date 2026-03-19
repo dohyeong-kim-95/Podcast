@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import { useAuth } from "@/lib/auth-context";
 
@@ -50,6 +51,16 @@ function MainContent() {
             소스를 업로드하면 매일 아침 팟캐스트가 생성됩니다
           </p>
         </div>
+
+        <Link
+          href="/upload"
+          className="mt-6 flex items-center justify-center gap-2 w-full bg-[#1DB954] text-black font-semibold py-3 rounded-full hover:bg-[#1ed760] transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+          소스 업로드
+        </Link>
       </main>
     </div>
   );

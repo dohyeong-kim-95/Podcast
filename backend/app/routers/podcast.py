@@ -28,7 +28,7 @@ router = APIRouter(prefix="/api", tags=["podcast"])
 KST = timezone(timedelta(hours=9))
 
 # Statuses that indicate generation is already in progress or done
-_SKIP_STATUSES = {"completed", "generating", "retry_1", "retry_2"}
+_SKIP_STATUSES = {"completed", "generating", "retry_1", "retry_2", "no_sources"}
 
 
 def _today_kst() -> str:
@@ -169,10 +169,11 @@ async def _generate_for_user(uid: str, date_str: str) -> dict:
     if not sources:
         await _update_podcast_status(
             podcast_id,
-            "completed",
+            "no_sources",
+            uid=uid,
+            date=date_str,
             sourceCount=0,
             sourceIds=[],
-            error="no_sources",
             generatedAt=firestore.SERVER_TIMESTAMP,
         )
         logger.info("No sources for user %s on %s, skipping", uid, date_str)
@@ -346,16 +347,31 @@ async def generate_me(
     date_str = _today_kst()
     podcast_id = _podcast_id(uid, date_str)
 
-    # Check if already generating or completed
+    # Atomically check status and claim "generating" via Firestore transaction
     db = get_firestore_client()
-    existing = db.collection("podcasts").document(podcast_id).get()
-    if existing.exists:
-        status = existing.to_dict().get("status", "")
-        if status in ("generating", "completed"):
-            raise HTTPException(
-                status_code=409,
-                detail=f"Podcast already {status} for today",
-            )
+    doc_ref = db.collection("podcasts").document(podcast_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _claim_generating(txn, ref):
+        snapshot = ref.get(transaction=txn)
+        if snapshot.exists:
+            status = snapshot.to_dict().get("status", "")
+            if status in ("generating", "completed", "no_sources"):
+                return status  # Already claimed
+        txn.set(ref, {
+            "status": "generating",
+            "uid": uid,
+            "date": date_str,
+        }, merge=True)
+        return None  # Successfully claimed
+
+    existing_status = _claim_generating(transaction, doc_ref)
+    if existing_status:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Podcast already {existing_status} for today",
+        )
 
     # Run generation in background
     background_tasks.add_task(_generate_for_user, uid, date_str)

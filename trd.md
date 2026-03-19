@@ -1,0 +1,306 @@
+# Podcast — TRD v1.0
+
+## 1. 시스템 아키텍처
+
+```
+┌─────────────────────────────────────────────────┐
+│                   사용자 (모바일)                    │
+│                  Next.js PWA                      │
+│              Firebase Hosting                     │
+└────────────────────┬────────────────────────────┘
+                     │ HTTPS
+                     ▼
+┌─────────────────────────────────────────────────┐
+│              FastAPI (Cloud Run)                  │
+│                                                   │
+│  ┌──────────┐ ┌──────────┐ ┌────────────────┐   │
+│  │ Upload   │ │ Podcast  │ │ Auth/Session   │   │
+│  │ Service  │ │ Service  │ │ Service        │   │
+│  └────┬─────┘ └────┬─────┘ └───────┬────────┘   │
+└───────┼────────────┼───────────────┼─────────────┘
+        │            │               │
+        ▼            ▼               ▼
+┌──────────┐  ┌───────────┐  ┌──────────────┐
+│ Firebase │  │notebooklm │  │Browserless.io│
+│ Storage  │  │   -py     │  │(원격 브라우저) │
+└──────────┘  └───────────┘  └──────────────┘
+        │            │
+        ▼            ▼
+┌──────────────────────────┐
+│   Firebase Firestore     │
+│  (메타데이터, 메모리, 쿠키) │
+└──────────────────────────┘
+
+┌──────────────────────────┐
+│   Cloud Scheduler        │
+│   매일 06:40 KST         │──→ Cloud Run POST /api/generate
+└──────────────────────────┘
+```
+
+## 2. 기술 스택
+
+| 구성요소 | 기술 | 비고 |
+|---------|------|------|
+| 프론트엔드 | Next.js 14 (App Router) | PWA, Spotify 스타일 다크 UI |
+| 호스팅 | Firebase Hosting | 정적 export |
+| 백엔드 | Python FastAPI | Cloud Run 배포 |
+| 컨테이너 | Google Cloud Run | min 0, max 1 |
+| 인증 | Firebase Auth | Google OAuth |
+| DB | Firebase Firestore | 메타데이터, 메모리, 쿠키 |
+| 파일 저장 | Firebase Storage | 소스 파일, 팟캐스트 오디오 |
+| 팟캐스트 | notebooklm-py 0.3.x | 비공식 NB API |
+| 스케줄링 | Cloud Scheduler | 일일 06:40 KST |
+| 알림 | FCM (Firebase Cloud Messaging) | PWA Push |
+| NB 재인증 | Browserless.io | 원격 Chromium |
+| 이미지→PDF | Pillow + reportlab | 서버사이드 변환 |
+
+## 3. 데이터 모델 (Firestore)
+
+### 3.1 users/{uid}
+```json
+{
+  "email": "user@gmail.com",
+  "displayName": "사용자",
+  "createdAt": "timestamp",
+  "fcmToken": "push_token_string",
+  "memory": {
+    "interests": "AI, 투자, 배터리 기술",
+    "preferredTone": "기술적 깊이 있지만 친근한 톤",
+    "preferredDepth": "전문가 수준",
+    "customInstructions": "자유 텍스트",
+    "feedbackHistory": [
+      { "date": "2026-03-18", "rating": "good" },
+      { "date": "2026-03-17", "rating": "normal" }
+    ]
+  }
+}
+```
+
+### 3.2 users/{uid}/nb_session (단일 문서)
+```json
+{
+  "storageState": "encrypted_json_string",
+  "lastUpdated": "timestamp",
+  "expiresAt": "timestamp",
+  "status": "valid | expiring_soon | expired"
+}
+```
+
+### 3.3 sources/{sourceId}
+```json
+{
+  "uid": "user_uid",
+  "fileName": "screenshot_01.png",
+  "originalType": "image/png",
+  "convertedType": "application/pdf",
+  "storagePath": "sources/{uid}/{date}/{sourceId}.pdf",
+  "thumbnailPath": "sources/{uid}/{date}/{sourceId}_thumb.jpg",
+  "uploadedAt": "timestamp",
+  "windowDate": "2026-03-19",
+  "status": "uploaded | processing | ready | used | deleted"
+}
+```
+
+### 3.4 podcasts/{podcastId}
+```json
+{
+  "uid": "user_uid",
+  "date": "2026-03-19",
+  "sourceIds": ["sourceId1", "sourceId2"],
+  "sourceCount": 5,
+  "audioPath": "podcasts/{uid}/2026-03-19.mp3",
+  "durationSeconds": 600,
+  "generatedAt": "timestamp",
+  "status": "pending | generating | retry_1 | retry_2 | completed | failed",
+  "instructionsUsed": "생성 시 사용된 instructions",
+  "error": null,
+  "feedback": null
+}
+```
+
+## 4. API 설계
+
+### 4.1 소스 관리
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| POST | `/api/sources/upload` | 파일 업로드 (multipart/form-data) |
+| GET | `/api/sources?date=YYYY-MM-DD` | 특정 윈도우 소스 목록 |
+| DELETE | `/api/sources/{sourceId}` | 소스 삭제 |
+
+### 4.2 팟캐스트
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| POST | `/api/generate` | 생성 트리거 (Scheduler 또는 수동) |
+| GET | `/api/podcast/today` | 오늘의 팟캐스트 정보 + signed URL |
+| POST | `/api/podcast/{id}/feedback` | 피드백 (good/normal/bad) |
+
+### 4.3 메모리
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| GET | `/api/memory` | 현재 메모리 조회 |
+| PUT | `/api/memory` | 메모리 업데이트 |
+
+### 4.4 NB 세션
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| POST | `/api/nb-session/start-auth` | Browserless 세션 시작, 뷰어 URL 반환 |
+| POST | `/api/nb-session/complete-auth` | 인증 완료, 쿠키 추출·저장 |
+| GET | `/api/nb-session/status` | 쿠키 유효성 상태 |
+
+## 5. 핵심 플로우 상세
+
+### 5.1 팟캐스트 생성 플로우
+
+```
+Cloud Scheduler (06:40 KST)
+    │
+    ▼
+POST /api/generate
+    │
+    ├─ 1. 소스 윈도우 내 소스 조회 (전일 07:00 ~ 당일 06:00)
+    ├─ 소스 0개 → 스킵, "소스 없음" 푸시 알림, 종료
+    │
+    ├─ 2. 사용자 메모리 로드 → instructions 구성
+    ├─ 3. NB 쿠키 로드 & 유효성 확인
+    │     만료 → 실패, "재인증 필요" 푸시
+    │
+    ├─ 4. notebooklm-py 실행
+    │     a. 노트북 생성
+    │     b. Storage에서 소스 다운로드 → 노트북에 전량 추가
+    │     c. generate_audio(instructions=...) 호출
+    │     d. wait_for_completion (타임아웃 20분)
+    │     e. download_audio → Storage 저장
+    │     f. 임시 노트북 삭제
+    │
+    ├─ 실패 → 재시도 (최대 2회)
+    │     3회 실패 → status: failed, 수동 트리거 활성화
+    │
+    ├─ 5. 이전 날 팟캐스트 오디오 삭제
+    └─ 6. FCM 푸시 알림
+```
+
+### 5.2 이미지→PDF 변환
+
+업로드 시 동기 처리:
+1. 원본 이미지 Storage 저장
+2. Pillow 로드 → reportlab PDF 페이지에 full-page 삽입
+3. PDF를 Storage 저장
+4. Firestore 소스 문서 업데이트
+
+### 5.3 Browserless.io 재인증
+
+```
+"재인증" 버튼 탭
+    │
+    ├─ 1. POST /api/nb-session/start-auth
+    │     → Browserless API로 원격 Chromium 세션 생성
+    │     → 세션 뷰어 URL 반환
+    │
+    ├─ 2. 프론트에서 뷰어 URL을 iframe으로 표시
+    │     → 사용자가 notebooklm.google.com 접속 → Google 로그인
+    │
+    ├─ 3. 서버가 Playwright로 원격 브라우저 연결
+    │     → 로그인 완료 감지 → storage_state 추출
+    │
+    ├─ 4. 쿠키 Fernet 암호화 → Firestore 저장
+    └─ 5. 세션 종료, 프론트에 "인증 완료" 응답
+```
+
+### 5.4 메모리→Instructions 구성
+
+```python
+def build_instructions(memory: dict) -> str:
+    parts = ["한국어로 진행해주세요.", "10분 분량으로 만들어주세요."]
+
+    if memory.get("interests"):
+        parts.append(f"청취자 관심 분야: {memory['interests']}")
+    if memory.get("preferredTone"):
+        parts.append(f"톤: {memory['preferredTone']}")
+    if memory.get("preferredDepth"):
+        parts.append(f"깊이: {memory['preferredDepth']}")
+    if memory.get("customInstructions"):
+        parts.append(memory["customInstructions"])
+
+    recent = memory.get("feedbackHistory", [])[-10:]
+    if recent:
+        bad = sum(1 for f in recent if f["rating"] == "bad")
+        if bad >= 3:
+            parts.append("최근 피드백이 부정적입니다. 더 흥미롭게 만들어주세요.")
+
+    return " ".join(parts)
+```
+
+## 6. 프론트엔드 구조
+
+```
+app/
+├── layout.tsx              # 다크 테마, 하단 네비게이션
+├── page.tsx                # 메인: 오늘의 팟캐스트 + 플레이어
+├── upload/page.tsx         # 소스 업로드 & 목록
+├── memory/page.tsx         # 성향 메모리 설정
+├── settings/page.tsx       # NB 세션 관리, 계정
+├── components/
+│   ├── AudioPlayer.tsx     # 재생/일시정지, 시크바, 배속
+│   ├── SourceList.tsx      # 소스 목록 (썸네일, 삭제)
+│   ├── UploadZone.tsx      # 파일 선택 / 카메라 촬영
+│   ├── StatusBanner.tsx    # NB 세션 상태 배너
+│   ├── FeedbackBar.tsx     # 좋았다/보통/별로
+│   └── BottomNav.tsx       # 하단 네비게이션
+├── lib/
+│   ├── firebase.ts         # Firebase 초기화
+│   ├── api.ts              # API 클라이언트
+│   └── auth.ts             # Auth 헬퍼
+└── public/
+    ├── manifest.json       # PWA 매니페스트
+    └── sw.js               # Service Worker (푸시, 백그라운드 재생)
+```
+
+## 7. 배포 구성
+
+### 7.1 Cloud Run
+- **이미지**: Python 3.11 + FastAPI + notebooklm-py + Playwright Chromium
+- **메모리**: 1GB / **CPU**: 1 vCPU
+- **인스턴스**: min 0, max 1
+- **타임아웃**: 25분
+- **환경변수**: `FIREBASE_PROJECT_ID`, `ALLOWED_EMAILS`, `NB_COOKIE_ENCRYPTION_KEY`, `BROWSERLESS_API_KEY`
+
+### 7.2 Cloud Scheduler
+- **크론**: `40 6 * * *` (Asia/Seoul)
+- **대상**: Cloud Run `/api/generate`
+- **인증**: 서비스 어카운트 OIDC
+
+### 7.3 Dockerfile
+```dockerfile
+FROM python:3.11-slim
+RUN apt-get update && apt-get install -y \
+    libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
+    libxdamage1 libxfixes3 libxrandr2 libgbm1 \
+    libpango-1.0-0 libcairo2 libasound2 libatspi2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+RUN playwright install chromium
+COPY . .
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+```
+
+## 8. 보안
+
+- Firebase Auth ID 토큰 검증 + 이메일 화이트리스트 (모든 API)
+- NB 쿠키: Fernet(AES) 암호화 후 Firestore 저장, 키는 환경변수
+- Scheduler → Cloud Run: 서비스 어카운트 OIDC
+- CORS: Firebase Hosting 도메인만 허용
+- 파일 업로드: 최대 20MB/파일, PDF/이미지 MIME 검증
+
+## 9. 에러 처리
+
+| 에러 | 처리 |
+|------|------|
+| NB 쿠키 만료 | 생성 중단, "재인증 필요" 푸시 |
+| Audio 생성 타임아웃/실패 | 재시도 2회 → 수동 트리거 |
+| 이미지→PDF 변환 실패 | 해당 소스 스킵, 나머지로 진행 |
+| Browserless 세션 실패 | 에러 표시, 재시도 유도 |
+| Storage 용량 초과 | 업로드 차단, 안내 |
+| 소스 0개 | 스킵, "소스 없음" 푸시 |

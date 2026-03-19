@@ -16,6 +16,28 @@ ALLOWED_MIME_TYPES = {
 
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB
 
+# Magic bytes for file type validation
+_MAGIC_SIGNATURES: dict[str, list[bytes]] = {
+    "application/pdf": [b"%PDF"],
+    "image/png": [b"\x89PNG\r\n\x1a\n"],
+    "image/jpeg": [b"\xff\xd8\xff"],
+    "image/webp": [b"RIFF"],  # RIFF....WEBP
+}
+
+
+def validate_file_content(file_bytes: bytes, content_type: str) -> bool:
+    """Validate file content against magic byte signatures."""
+    sigs = _MAGIC_SIGNATURES.get(content_type)
+    if not sigs:
+        return False
+    for sig in sigs:
+        if file_bytes[:len(sig)] == sig:
+            # Extra check for WEBP: bytes 8-12 must be "WEBP"
+            if content_type == "image/webp":
+                return len(file_bytes) >= 12 and file_bytes[8:12] == b"WEBP"
+            return True
+    return False
+
 
 def _today_date_str() -> str:
     return datetime.now(KST).strftime("%Y-%m-%d")
@@ -41,7 +63,8 @@ async def upload_source(uid: str, file_bytes: bytes, filename: str, content_type
         "fileName": filename,
         "originalType": content_type,
         "convertedType": None,
-        "storagePath": storage_path,
+        "originalStoragePath": storage_path,
+        "convertedStoragePath": None,
         "uploadedAt": firestore.SERVER_TIMESTAMP,
         "windowDate": date_str,
         "status": "uploaded",
@@ -70,7 +93,7 @@ async def convert_image_to_pdf(uid: str, source_id: str, file_bytes: bytes, orig
     db = get_firestore_client()
     db.collection("sources").document(source_id).update({
         "convertedType": "application/pdf",
-        "storagePath": pdf_path,
+        "convertedStoragePath": pdf_path,
         "status": "ready",
     })
 
@@ -112,25 +135,14 @@ async def delete_source(uid: str, source_id: str) -> bool:
     if data.get("uid") != uid:
         return False
 
-    # Delete from Storage
+    # Delete from Storage — both original and converted files
     bucket = _get_bucket()
-    storage_path = data.get("storagePath", "")
-    if storage_path:
-        blob = bucket.blob(storage_path)
-        if blob.exists():
-            blob.delete()
-
-    # If there was an original file with different extension, try to delete it too
-    original_type = data.get("originalType", "")
-    if data.get("convertedType") and original_type.startswith("image/"):
-        ext_map = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
-        orig_ext = ext_map.get(original_type)
-        if orig_ext:
-            orig_path = storage_path.rsplit(".", 1)[0] + "." + orig_ext
-            if orig_path != storage_path:
-                orig_blob = bucket.blob(orig_path)
-                if orig_blob.exists():
-                    orig_blob.delete()
+    for path_key in ("originalStoragePath", "convertedStoragePath"):
+        path = data.get(path_key, "")
+        if path:
+            blob = bucket.blob(path)
+            if blob.exists():
+                blob.delete()
 
     doc_ref.delete()
     return True

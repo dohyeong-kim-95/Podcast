@@ -10,6 +10,7 @@ from app.services.storage import (
     convert_image_to_pdf,
     list_sources,
     delete_source,
+    validate_file_content,
 )
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
@@ -39,15 +40,21 @@ async def upload(
     if len(file_bytes) == 0:
         raise HTTPException(status_code=400, detail="Empty file")
 
+    if not validate_file_content(file_bytes, content_type):
+        raise HTTPException(
+            status_code=400,
+            detail=f"File content does not match declared type: {content_type}",
+        )
+
     result = await upload_source(uid, file_bytes, file.filename or "unknown", content_type)
 
     # Convert image to PDF
     if content_type.startswith("image/"):
         source_id = result["sourceId"]
-        storage_path = result["storagePath"]
-        pdf_path = await convert_image_to_pdf(uid, source_id, file_bytes, storage_path)
+        original_path = result["originalStoragePath"]
+        pdf_path = await convert_image_to_pdf(uid, source_id, file_bytes, original_path)
         result["convertedType"] = "application/pdf"
-        result["storagePath"] = pdf_path
+        result["convertedStoragePath"] = pdf_path
         result["status"] = "ready"
 
     return result

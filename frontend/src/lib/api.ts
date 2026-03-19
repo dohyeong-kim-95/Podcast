@@ -98,3 +98,40 @@ export async function listSources(date?: string): Promise<{ date: string; source
 export async function deleteSource(sourceId: string): Promise<{ deleted: boolean }> {
   return apiDelete(`/api/sources/${sourceId}`);
 }
+
+// Podcast APIs
+export interface Podcast {
+  podcastId: string;
+  uid: string;
+  date: string;
+  status: string; // "completed" | "generating" | "failed" | "no_sources" | "pending" | "retry_1" | "retry_2"
+  audioPath?: string;
+  audioUrl?: string;
+  durationSeconds?: number;
+  feedback?: string | null;
+  downloaded?: boolean;
+  error?: string | null;
+  generatedAt?: string;
+  sourceCount?: number;
+}
+
+export interface TodayPodcastResponse {
+  podcast: Podcast | null;
+  date: string;
+}
+
+export async function getTodayPodcast(): Promise<TodayPodcastResponse> {
+  return apiGet("/api/podcasts/today");
+}
+
+export async function submitFeedback(podcastId: string, rating: string): Promise<{ podcastId: string; feedback: string }> {
+  return apiPost(`/api/podcasts/${podcastId}/feedback`, { rating });
+}
+
+export async function markDownloaded(podcastId: string): Promise<void> {
+  return apiPost(`/api/podcasts/${podcastId}/downloaded`);
+}
+
+export async function triggerGenerate(): Promise<{ status: string; date: string; podcastId: string }> {
+  return apiPost("/api/generate/me");
+}

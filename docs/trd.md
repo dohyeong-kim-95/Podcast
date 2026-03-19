@@ -44,7 +44,7 @@
 | 프론트엔드 | Next.js 14 (App Router) | PWA, Spotify 스타일 다크 UI |
 | 호스팅 | Firebase Hosting | 정적 export |
 | 백엔드 | Python FastAPI | Cloud Run 배포 |
-| 컨테이너 | Google Cloud Run | min 0, max 5 (사용자당 1) |
+| 컨테이너 | Google Cloud Run | min 0, max 1 (단일 인스턴스, asyncio 병렬) |
 | 인증 | Firebase Auth | Google OAuth |
 | DB | Firebase Firestore | 메타데이터, 메모리, 쿠키 |
 | 파일 저장 | Firebase Storage | 소스 파일, 팟캐스트 오디오 |
@@ -135,6 +135,7 @@
 | POST | `/api/generate/me` | 개별 사용자 수동 생성 트리거 |
 | GET | `/api/podcast/today` | 오늘의 팟캐스트 정보 + signed URL |
 | POST | `/api/podcast/{id}/feedback` | 피드백 (good/normal/bad) |
+| POST | `/api/podcast/{id}/downloaded` | 다운로드 완료 표시 |
 | POST | `/api/remind-download` | 다운로드 리마인더 (Scheduler, 22:00 KST) |
 
 ### 4.3 메모리
@@ -161,6 +162,7 @@ Cloud Scheduler (06:40 KST)
 POST /api/generate (Scheduler → 전체 사용자 순회)
     │
     ├─ 0. 화이트리스트 전체 사용자 조회, 각 사용자별로 아래 플로우 병렬 실행
+    ├─ 0-1. 당일 팟캐스트 status가 completed인 사용자 → 스킵 (Scheduler 재시도 시 중복 생성 방지)
     ├─ 1. 소스 윈도우 내 소스 조회 (전일 06:40 ~ 당일 06:40)
     ├─ 소스 0개 → 스킵, "소스 없음" 푸시 알림, 종료
     │
@@ -299,7 +301,7 @@ app/
 ### 7.1 Cloud Run
 - **이미지**: Python 3.11 + FastAPI + notebooklm-py + Playwright Chromium
 - **메모리**: 1GB / **CPU**: 1 vCPU
-- **인스턴스**: min 0, max 5 (최대 5명 동시 생성)
+- **인스턴스**: min 0, max 1 (단일 인스턴스에서 asyncio로 5명 병렬 처리)
 - **타임아웃**: 25분
 - **환경변수**: `FIREBASE_PROJECT_ID`, `ALLOWED_EMAILS`, `NB_COOKIE_ENCRYPTION_KEY`, `BROWSERLESS_API_KEY`, `CLOUD_RUN_URL` (OIDC audience용)
 

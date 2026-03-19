@@ -94,7 +94,7 @@
   "originalType": "image/png",
   "convertedType": "application/pdf",
   "storagePath": "sources/{uid}/{date}/{sourceId}.pdf",
-  "thumbnailPath": "sources/{uid}/{date}/{sourceId}_thumb.jpg",
+  // thumbnailPath: MVP 스킵. 파일 타입 아이콘(📄/🖼️)으로 대체. P1에서 썸네일 생성 검토
   "uploadedAt": "timestamp",
   "windowDate": "2026-03-19",
   "status": "uploaded | processing | ready | used | deleted"
@@ -146,8 +146,8 @@
 ### 4.4 NB 세션
 | 메서드 | 경로 | 설명 |
 |--------|------|------|
-| POST | `/api/nb-session/start-auth` | Browserless 세션 시작, 뷰어 URL 반환 |
-| POST | `/api/nb-session/complete-auth` | 인증 완료, 쿠키 추출·저장 |
+| POST | `/api/nb-session/start-auth` | Browserless 세션 시작, 뷰어 URL 반환, 폴링 시작 |
+| GET | `/api/nb-session/poll/{session_id}` | 폴링 상태 조회 (프론트가 완료 여부 확인용) |
 | GET | `/api/nb-session/status` | 쿠키 유효성 상태 |
 
 ## 5. 핵심 플로우 상세
@@ -199,16 +199,50 @@ POST /api/generate (Scheduler → 전체 사용자 순회)
     │
     ├─ 1. POST /api/nb-session/start-auth
     │     → Browserless API로 원격 Chromium 세션 생성
-    │     → 세션 뷰어 URL 반환
+    │     → Playwright로 원격 브라우저에 connect, notebooklm.google.com으로 navigate
+    │     → 세션 뷰어 URL + 폴링 ID 반환
     │
     ├─ 2. 프론트에서 뷰어 URL을 iframe으로 표시
-    │     → 사용자가 notebooklm.google.com 접속 → Google 로그인
+    │     → 사용자가 Google 로그인 수행
     │
-    ├─ 3. 서버가 Playwright로 원격 브라우저 연결
-    │     → 로그인 완료 감지 → storage_state 추출
+    ├─ 3. 서버가 Playwright로 로그인 완료 자동 감지 (폴링)
+    │     → 2초 간격으로 page.url() 확인
+    │     → URL이 notebooklm.google.com/* (로그인 후 리다이렉트)로 변경되면 로그인 완료 판정
+    │     → 타임아웃: 5분 (초과 시 세션 종료, 프론트에 실패 응답)
+    │     → 로그인 완료 시 browser.contexts[0].storage_state() 호출 → 쿠키/스토리지 추출
+    │     ※ 리스크: 폴링 동안 Browserless 세션 유지 필요. 무료 티어 시간 소모하지만
+    │       재인증이 월 1~2회이므로 문제 수준 아님
     │
-    ├─ 4. 쿠키 Fernet 암호화 → Firestore 저장
-    └─ 5. 세션 종료, 프론트에 "인증 완료" 응답
+    ├─ 4. 추출한 storage_state를 Fernet(AES) 암호화 → Firestore nb_session 문서 저장
+    │     → expiresAt: 현재 + 30일 (추정)
+    │     → status: "valid"
+    │
+    ├─ 5. Browserless 세션 종료 (browser.close())
+    └─ 6. 프론트에 "인증 완료" 응답 → iframe 닫기, StatusBanner 갱신
+```
+
+**구현 핵심 (Playwright 서버 코드)**:
+```python
+# start-auth 시 백그라운드 태스크로 폴링 시작
+async def poll_login_completion(browser, session_id: str):
+    """2초 간격으로 URL 체크, 로그인 완료 시 쿠키 추출"""
+    page = browser.contexts[0].pages[0]
+    timeout = 300  # 5분
+
+    for _ in range(timeout // 2):
+        await asyncio.sleep(2)
+        current_url = page.url
+        if "notebooklm.google.com" in current_url and "/login" not in current_url:
+            # 로그인 완료 감지
+            storage_state = await browser.contexts[0].storage_state()
+            encrypted = fernet.encrypt(json.dumps(storage_state).encode())
+            await save_to_firestore(session_id, encrypted)
+            await browser.close()
+            return True
+
+    # 타임아웃
+    await browser.close()
+    return False
 ```
 
 ### 5.4 메모리→Instructions 구성
@@ -246,7 +280,7 @@ app/
 ├── settings/page.tsx       # NB 세션 관리, 계정
 ├── components/
 │   ├── AudioPlayer.tsx     # 재생/일시정지, 시크바, 배속
-│   ├── SourceList.tsx      # 소스 목록 (썸네일, 삭제)
+│   ├── SourceList.tsx      # 소스 목록 (파일타입 아이콘, 삭제)
 │   ├── UploadZone.tsx      # 파일 선택 / 카메라 촬영
 │   ├── StatusBanner.tsx    # NB 세션 상태 배너
 │   ├── FeedbackBar.tsx     # 좋았다/보통/별로
@@ -267,7 +301,7 @@ app/
 - **메모리**: 1GB / **CPU**: 1 vCPU
 - **인스턴스**: min 0, max 5 (최대 5명 동시 생성)
 - **타임아웃**: 25분
-- **환경변수**: `FIREBASE_PROJECT_ID`, `ALLOWED_EMAILS`, `NB_COOKIE_ENCRYPTION_KEY`, `BROWSERLESS_API_KEY`
+- **환경변수**: `FIREBASE_PROJECT_ID`, `ALLOWED_EMAILS`, `NB_COOKIE_ENCRYPTION_KEY`, `BROWSERLESS_API_KEY`, `CLOUD_RUN_URL` (OIDC audience용)
 
 ### 7.2 Cloud Scheduler
 - **생성 크론**: `40 6 * * *` (Asia/Seoul) → Cloud Run `POST /api/generate`
@@ -293,11 +327,29 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
 
 ## 8. 보안
 
-- Firebase Auth ID 토큰 검증 + 이메일 화이트리스트 (최대 5명, 모든 API)
-- NB 쿠키: Fernet(AES) 암호화 후 Firestore 저장, 키는 환경변수
-- Scheduler → Cloud Run: 서비스 어카운트 OIDC
-- CORS: Firebase Hosting 도메인만 허용
-- 파일 업로드: 최대 20MB/파일, PDF/이미지 MIME 검증
+- **사용자 인증**: Firebase Auth ID 토큰 검증 + 이메일 화이트리스트 (최대 5명, 모든 사용자 API)
+- **Scheduler 인증**: Cloud Scheduler → Cloud Run 호출 시 서비스 어카운트 OIDC 토큰 사용
+  - `/api/generate`, `/api/remind-download` 엔드포인트에 OIDC 검증 미들웨어 적용
+  - `google.oauth2.id_token.verify_oauth2_token()` 으로 Authorization 헤더의 OIDC 토큰 검증
+  - `audience`는 Cloud Run 서비스 URL (예: `https://podcast-xxxxx-run.app`)
+  - 검증 실패 시 403 반환 → 외부에서 임의 호출 방지
+  - 구현: `google-auth` 라이브러리 사용
+  ```python
+  from google.oauth2 import id_token
+  from google.auth.transport import requests
+
+  def verify_scheduler_token(authorization: str, expected_audience: str):
+      """Cloud Scheduler OIDC 토큰 검증"""
+      token = authorization.replace("Bearer ", "")
+      claim = id_token.verify_oauth2_token(
+          token, requests.Request(), audience=expected_audience
+      )
+      # claim["email"]이 Scheduler 서비스 어카운트인지 확인
+      return claim
+  ```
+- **NB 쿠키**: Fernet(AES) 암호화 후 Firestore 저장, 키는 환경변수 `NB_COOKIE_ENCRYPTION_KEY`
+- **CORS**: Firebase Hosting 도메인만 허용
+- **파일 업로드**: 최대 20MB/파일, PDF/이미지 MIME 검증
 
 ## 9. 에러 처리
 

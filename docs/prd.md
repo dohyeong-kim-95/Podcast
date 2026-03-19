@@ -95,7 +95,7 @@
 - **Firebase Spark 한도**: Storage 5GB, Firestore 1GB. 소스 파일은 팟캐스트 생성 후 정리 필요. 5명 사용 시 용량 관리 주의
 - **Audio Overview 생성 시간**: NotebookLM 서버 상태에 따라 5~15분 소요
 - **Browserless.io 무료 티어**: 월 사용량 제한 있음 (재인증이 월 1-2회이므로 충분)
-- **이미지→PDF 변환**: 서버사이드에서 Pillow/reportlab 등으로 변환. 텍스트 없는 이미지는 NotebookLM이 해석 가능한 수준에 의존
+- **이미지→PDF 변환**: 서버사이드에서 img2pdf로 변환. 텍스트 없는 이미지는 NotebookLM이 해석 가능한 수준에 의존
 
 ## 7. 성공 지표
 

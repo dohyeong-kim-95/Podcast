@@ -52,7 +52,7 @@
 | 스케줄링 | Cloud Scheduler | 일일 06:40 KST |
 | 알림 | FCM (Firebase Cloud Messaging) | PWA Push |
 | NB 재인증 | Browserless.io | 원격 Chromium |
-| 이미지→PDF | Pillow + reportlab | 서버사이드 변환 |
+| 이미지→PDF | img2pdf | 서버사이드 변환 (코드 간소화를 위해 reportlab 대신 채택) |
 
 ## 3. 데이터 모델 (Firestore)
 
@@ -162,7 +162,7 @@ Cloud Scheduler (06:40 KST)
 POST /api/generate (Scheduler → 전체 사용자 순회)
     │
     ├─ 0. 화이트리스트 전체 사용자 조회, 각 사용자별로 아래 플로우 병렬 실행
-    ├─ 0-1. 당일 팟캐스트 status가 completed인 사용자 → 스킵 (Scheduler 재시도 시 중복 생성 방지)
+    ├─ 0-1. 당일 팟캐스트 status가 completed/generating/retry_1/retry_2인 사용자 → 스킵 (동시 생성 방지)
     ├─ 1. 소스 윈도우 내 소스 조회 (전일 06:40 ~ 당일 06:40)
     ├─ 소스 0개 → 스킵, "소스 없음" 푸시 알림, 종료
     │
@@ -190,7 +190,7 @@ POST /api/generate (Scheduler → 전체 사용자 순회)
 
 업로드 시 동기 처리:
 1. 원본 이미지 Storage 저장
-2. Pillow 로드 → reportlab PDF 페이지에 full-page 삽입
+2. `img2pdf.convert(image_bytes)` → PDF 바이트 생성
 3. PDF를 Storage 저장
 4. Firestore 소스 문서 업데이트
 
@@ -204,7 +204,10 @@ POST /api/generate (Scheduler → 전체 사용자 순회)
     │     → Playwright로 원격 브라우저에 connect, notebooklm.google.com으로 navigate
     │     → 세션 뷰어 URL + 폴링 ID 반환
     │
-    ├─ 2. 프론트에서 뷰어 URL을 iframe으로 표시
+    ├─ 2. 프론트에서 뷰어 URL 표시 (iframe 또는 새 탭)
+    │     → ⚠️ Google 로그인 페이지가 iframe을 차단할 가능성 높음 (X-Frame-Options: DENY)
+    │     → T-059 스파이크 결과에 따라 iframe / window.open() 팝업 / 새 탭 중 확정
+    │     → 새 탭 방식 시: 서버 폴링으로 완료 감지 후 원래 탭에서 상태 갱신
     │     → 사용자가 Google 로그인 수행
     │
     ├─ 3. 서버가 Playwright로 로그인 완료 자동 감지 (폴링)
@@ -299,7 +302,7 @@ app/
 ## 7. 배포 구성
 
 ### 7.1 Cloud Run
-- **이미지**: Python 3.11 + FastAPI + notebooklm-py + Playwright Chromium
+- **이미지**: Python 3.11 + FastAPI + notebooklm-py + Playwright (라이브러리만, Chromium 미포함 — Browserless.io 원격 연결)
 - **메모리**: 1GB / **CPU**: 1 vCPU
 - **인스턴스**: min 0, max 1 (단일 인스턴스에서 asyncio로 5명 병렬 처리)
 - **타임아웃**: 25분
@@ -313,16 +316,11 @@ app/
 ### 7.3 Dockerfile
 ```dockerfile
 FROM python:3.11-slim
-RUN apt-get update && apt-get install -y \
-    libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
-    libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
-    libxdamage1 libxfixes3 libxrandr2 libgbm1 \
-    libpango-1.0-0 libcairo2 libasound2 libatspi2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN playwright install chromium
+# Chromium 바이너리 미설치: Browserless.io 원격 브라우저 사용
+# playwright 라이브러리만으로 browser.connect_over_cdp() 가능
 COPY . .
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
 ```

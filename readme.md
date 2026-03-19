@@ -57,7 +57,7 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-playwright install chromium
+# Chromium 미설치: Browserless.io 원격 브라우저 사용
 uvicorn app.main:app --reload --port 8080
 ```
 

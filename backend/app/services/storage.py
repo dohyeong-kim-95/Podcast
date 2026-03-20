@@ -148,7 +148,8 @@ def delete_paths(bucket: str, paths: list[str]) -> None:
     non_empty = [path for path in paths if path]
     if non_empty:
         with httpx.Client(timeout=30.0) as client:
-            response = client.delete(
+            response = client.request(
+                "DELETE",
                 f"{_storage_base_url()}/object/{bucket}",
                 headers=_storage_headers(),
                 json={"prefixes": non_empty},

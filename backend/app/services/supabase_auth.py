@@ -27,11 +27,11 @@ def _supabase_url() -> str:
 
 def _supabase_auth_key() -> str:
     value = (
-        _normalize_env_value(os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
-        or _normalize_env_value(os.getenv("SUPABASE_ANON_KEY", ""))
+        _normalize_env_value(os.getenv("SUPABASE_ANON_KEY", ""))
+        or _normalize_env_value(os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
     )
     if not value:
-        raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY not configured")
+        raise RuntimeError("SUPABASE_ANON_KEY or SUPABASE_SERVICE_ROLE_KEY not configured")
     return value
 
 

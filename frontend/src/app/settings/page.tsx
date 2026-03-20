@@ -42,6 +42,7 @@ function SettingsContent() {
   const [notificationError, setNotificationError] = useState<string | null>(null);
   const [notificationNotice, setNotificationNotice] = useState<string | null>(null);
   const [notificationSaving, setNotificationSaving] = useState(false);
+  const [notificationPromptArmed, setNotificationPromptArmed] = useState(false);
   const subscriptionCacheKey = user ? `daily-podcast:push-subscription:${user.id}` : null;
 
   const refreshStatus = useCallback(async () => {
@@ -187,9 +188,18 @@ function SettingsContent() {
   }, []);
 
   const handleEnableNotifications = useCallback(async () => {
+    if (notificationPermission === "default" && !notificationPromptArmed) {
+      setNotificationError(null);
+      setNotificationNotice("다음 단계에서 브라우저 알림 권한 팝업이 열립니다. 실수로 '거부'하면 브라우저 설정에서 직접 다시 허용해야 합니다.");
+      setNotificationPromptArmed(true);
+      return;
+    }
+
     setNotificationSaving(true);
     setNotificationError(null);
-    setNotificationNotice(null);
+    setNotificationNotice(notificationPermission === "default"
+      ? "브라우저 권한 팝업이 열리면 '허용'을 눌러 주세요."
+      : null);
 
     try {
       const registration = await registerAppServiceWorker();
@@ -207,14 +217,18 @@ function SettingsContent() {
       setNotificationPermission(typeof Notification === "undefined" ? "unsupported" : Notification.permission);
       setNotificationEndpoint(subscription.endpoint);
       setNotificationNotice("알림이 활성화되었습니다. 생성 완료와 리마인더를 받을 수 있습니다.");
+      setNotificationPromptArmed(false);
     } catch (err) {
       const message = err instanceof Error ? err.message : "알림 활성화에 실패했습니다";
       setNotificationError(message === "API error: 404" ? "푸시 토큰 등록 API가 아직 연결되지 않았습니다" : message);
+      if (typeof Notification !== "undefined" && Notification.permission === "denied") {
+        setNotificationNotice("이 사이트 알림이 차단되었습니다. 주소창 왼쪽 사이트 설정에서 알림을 '허용'으로 바꾼 뒤 다시 시도해 주세요.");
+      }
       await refreshNotificationState();
     } finally {
       setNotificationSaving(false);
     }
-  }, [refreshNotificationState, subscriptionCacheKey]);
+  }, [notificationPermission, notificationPromptArmed, refreshNotificationState, subscriptionCacheKey]);
 
   const statusTone = useMemo(() => {
     if (!session) {
@@ -364,8 +378,10 @@ function SettingsContent() {
           )}
 
           {notificationPermission === "denied" && (
-            <div className="rounded-lg border border-[#282828] bg-[#121212] px-4 py-3 text-xs text-[#b3b3b3]">
-              브라우저 설정에서 이 사이트의 알림 권한을 다시 허용해야 합니다.
+            <div className="rounded-lg border border-[#282828] bg-[#121212] px-4 py-3 text-xs text-[#b3b3b3] space-y-2">
+              <p>브라우저가 이 사이트의 알림을 차단했습니다.</p>
+              <p>복구 방법: 주소창 왼쪽 사이트 정보 아이콘 &gt; 사이트 설정 &gt; 알림 &gt; 허용</p>
+              <p className="text-[#8f8f8f]">대상 사이트: {typeof window !== "undefined" ? window.location.origin : "https://podcast.bubblelab.dev"}</p>
             </div>
           )}
 
@@ -377,6 +393,8 @@ function SettingsContent() {
           >
             {notificationSaving
               ? "알림 설정 중..."
+              : notificationPermission === "default" && notificationPromptArmed
+                ? "브라우저 권한 요청"
               : notificationPermission === "granted"
                 ? "알림 다시 동기화"
                 : "알림 활성화"}

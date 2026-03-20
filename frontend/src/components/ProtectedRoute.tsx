@@ -18,7 +18,7 @@ export default function ProtectedRoute({
     }
   }, [user, loading, router]);
 
-  if (loading || verified === "pending") {
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#121212]">
         <div className="w-8 h-8 border-2 border-[#1DB954] border-t-transparent rounded-full animate-spin" />
@@ -46,10 +46,6 @@ export default function ProtectedRoute({
         </div>
       </div>
     );
-  }
-
-  if (verified !== "verified") {
-    return null;
   }
 
   return <>{children}</>;

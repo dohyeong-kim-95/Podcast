@@ -7,6 +7,21 @@ const API_BASE_URL = (
   "http://localhost:8080"
 ).replace(/\/+$/, "");
 
+const REQUEST_TIMEOUT_MS = 15000;
+
+async function fetchWithTimeout(input: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 async function getAuthHeaders(): Promise<Record<string, string>> {
   const token = await getSupabaseAccessToken();
   return {
@@ -17,7 +32,7 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
 
 export async function apiGet<T>(path: string): Promise<T> {
   const headers = await getAuthHeaders();
-  const res = await fetch(`${API_BASE_URL}${path}`, { headers });
+  const res = await fetchWithTimeout(`${API_BASE_URL}${path}`, { headers });
   if (!res.ok) {
     throw new Error(`API error: ${res.status}`);
   }
@@ -26,7 +41,7 @@ export async function apiGet<T>(path: string): Promise<T> {
 
 export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   const headers = await getAuthHeaders();
-  const res = await fetch(`${API_BASE_URL}${path}`, {
+  const res = await fetchWithTimeout(`${API_BASE_URL}${path}`, {
     method: "POST",
     headers,
     body: body ? JSON.stringify(body) : undefined,
@@ -39,7 +54,7 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
 
 export async function apiPut<T>(path: string, body: unknown): Promise<T> {
   const headers = await getAuthHeaders();
-  const res = await fetch(`${API_BASE_URL}${path}`, {
+  const res = await fetchWithTimeout(`${API_BASE_URL}${path}`, {
     method: "PUT",
     headers,
     body: JSON.stringify(body),
@@ -52,7 +67,7 @@ export async function apiPut<T>(path: string, body: unknown): Promise<T> {
 
 export async function apiDelete<T>(path: string): Promise<T> {
   const headers = await getAuthHeaders();
-  const res = await fetch(`${API_BASE_URL}${path}`, {
+  const res = await fetchWithTimeout(`${API_BASE_URL}${path}`, {
     method: "DELETE",
     headers,
   });

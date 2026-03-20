@@ -42,6 +42,8 @@ const API_BASE = (
   "http://localhost:8080"
 ).replace(/\/+$/, "");
 
+const AUTH_VERIFY_TIMEOUT_MS = 10000;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -111,10 +113,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return;
         }
 
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), AUTH_VERIFY_TIMEOUT_MS);
         const res = await fetch(`${API_BASE}/api/auth/verify`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
         });
+        window.clearTimeout(timeoutId);
         if (cancelled) return;
         if (res.ok) {
           setVerified("verified");

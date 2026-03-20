@@ -17,9 +17,21 @@ def _db_url() -> str:
     return value
 
 
+def _db_connect_timeout_seconds() -> int:
+    raw = os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "10").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 10
+
+
 @contextmanager
 def get_db() -> Iterator[psycopg.Connection]:
-    conn = psycopg.connect(_db_url(), row_factory=dict_row)
+    conn = psycopg.connect(
+        _db_url(),
+        row_factory=dict_row,
+        connect_timeout=_db_connect_timeout_seconds(),
+    )
     try:
         yield conn
         conn.commit()
@@ -49,4 +61,3 @@ def serialize_date(value: Any) -> str | None:
     if isinstance(value, date):
         return value.isoformat()
     return None
-

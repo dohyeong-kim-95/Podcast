@@ -28,15 +28,19 @@ _MAGIC_SIGNATURES: dict[str, list[bytes]] = {
 }
 
 
+def _normalize_env_value(value: str) -> str:
+    return value.strip().replace("\r", "").replace("\n", "").strip("'\"")
+
+
 def _supabase_url() -> str:
-    value = os.getenv("SUPABASE_URL", "").strip()
+    value = _normalize_env_value(os.getenv("SUPABASE_URL", ""))
     if not value:
         raise RuntimeError("SUPABASE_URL not configured")
     return value
 
 
 def _service_role_key() -> str:
-    value = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    value = _normalize_env_value(os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
     if not value:
         raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY not configured")
     return value
@@ -51,11 +55,11 @@ def _today_date_str() -> str:
 
 
 def _sources_bucket() -> str:
-    return os.getenv("SUPABASE_STORAGE_BUCKET_SOURCES", "sources").strip() or "sources"
+    return _normalize_env_value(os.getenv("SUPABASE_STORAGE_BUCKET_SOURCES", "sources")) or "sources"
 
 
 def _podcasts_bucket() -> str:
-    return os.getenv("SUPABASE_STORAGE_BUCKET_PODCASTS", "podcasts").strip() or "podcasts"
+    return _normalize_env_value(os.getenv("SUPABASE_STORAGE_BUCKET_PODCASTS", "podcasts")) or "podcasts"
 
 
 def _read_bytes(source: bytes | str | os.PathLike[str]) -> bytes:

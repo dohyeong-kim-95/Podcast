@@ -14,8 +14,12 @@ class AuthVerificationServiceError(Exception):
     pass
 
 
+def _normalize_env_value(value: str) -> str:
+    return value.strip().replace("\r", "").replace("\n", "").strip("'\"")
+
+
 def _supabase_url() -> str:
-    value = os.getenv("SUPABASE_URL", "").strip()
+    value = _normalize_env_value(os.getenv("SUPABASE_URL", ""))
     if not value:
         raise RuntimeError("SUPABASE_URL not configured")
     return value.rstrip("/")
@@ -23,11 +27,11 @@ def _supabase_url() -> str:
 
 def _supabase_auth_key() -> str:
     value = (
-        os.getenv("SUPABASE_ANON_KEY", "").strip()
-        or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+        _normalize_env_value(os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
+        or _normalize_env_value(os.getenv("SUPABASE_ANON_KEY", ""))
     )
     if not value:
-        raise RuntimeError("SUPABASE_ANON_KEY or SUPABASE_SERVICE_ROLE_KEY not configured")
+        raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY not configured")
     return value
 
 

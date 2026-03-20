@@ -21,7 +21,7 @@ class BrowserlessSession:
 
 
 def _get_required_env(name: str) -> str:
-    value = os.getenv(name, "").strip()
+    value = "".join(os.getenv(name, "").split()).strip("'\"")
     if not value:
         raise RuntimeError(f"{name} not configured")
     return value

@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from supabase import Client, create_client
+import httpx
 
 from app.services.db import get_db, serialize_date, serialize_timestamp, utc_now
 
@@ -46,8 +46,16 @@ def _service_role_key() -> str:
     return value
 
 
-def _storage_client() -> Client:
-    return create_client(_supabase_url(), _service_role_key())
+def _storage_base_url() -> str:
+    return f"{_supabase_url().rstrip('/')}/storage/v1"
+
+
+def _storage_headers() -> dict[str, str]:
+    key = _service_role_key()
+    return {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+    }
 
 
 def _today_date_str() -> str:
@@ -82,22 +90,39 @@ def validate_file_content(file_bytes: bytes, content_type: str) -> bool:
 
 
 def upload_bytes(bucket: str, path: str, payload: bytes, *, content_type: str) -> None:
-    storage = _storage_client().storage.from_(bucket)
-    storage.upload(
-        path=path,
-        file=payload,
-        file_options={"content-type": content_type, "upsert": "true"},
-    )
+    filename = path.rsplit("/", 1)[-1]
+    with httpx.Client(timeout=30.0) as client:
+        response = client.post(
+            f"{_storage_base_url()}/object/{bucket}/{path}",
+            headers={
+                **_storage_headers(),
+                "x-upsert": "true",
+            },
+            files={"file": (filename, payload, content_type)},
+        )
+        response.raise_for_status()
 
 
 def download_bytes(bucket: str, path: str) -> bytes:
-    return _storage_client().storage.from_(bucket).download(path)
+    with httpx.Client(timeout=30.0) as client:
+        response = client.get(
+            f"{_storage_base_url()}/object/{bucket}/{path}",
+            headers=_storage_headers(),
+        )
+        response.raise_for_status()
+        return response.content
 
 
 def delete_paths(bucket: str, paths: list[str]) -> None:
     non_empty = [path for path in paths if path]
     if non_empty:
-        _storage_client().storage.from_(bucket).remove(non_empty)
+        with httpx.Client(timeout=30.0) as client:
+            response = client.delete(
+                f"{_storage_base_url()}/object/{bucket}",
+                headers=_storage_headers(),
+                json={"prefixes": non_empty},
+            )
+            response.raise_for_status()
 
 
 async def upload_source(uid: str, source: bytes | str | os.PathLike[str], filename: str, content_type: str) -> dict[str, Any]:

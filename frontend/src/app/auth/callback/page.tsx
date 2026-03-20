@@ -11,26 +11,58 @@ export default function AuthCallbackPage() {
     let active = true;
 
     const completeAuth = async () => {
+      const supabase = getSupabaseBrowserClient();
       const params = new URLSearchParams(window.location.search);
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
       const code = params.get("code");
       const next = params.get("next") || "/";
+      const accessToken = hashParams.get("access_token");
+      const refreshToken = hashParams.get("refresh_token");
 
-      if (!code) {
-        router.replace("/login");
+      if (code) {
+        const { error } = await supabase.auth.exchangeCodeForSession(code);
+        if (!active) {
+          return;
+        }
+
+        if (error) {
+          router.replace(`/login?error=${encodeURIComponent(error.message)}`);
+          return;
+        }
+
+        router.replace(next);
         return;
       }
 
-      const { error } = await getSupabaseBrowserClient().auth.exchangeCodeForSession(code);
+      if (accessToken && refreshToken) {
+        const { error } = await supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        });
+        if (!active) {
+          return;
+        }
+
+        if (error) {
+          router.replace(`/login?error=${encodeURIComponent(error.message)}`);
+          return;
+        }
+
+        router.replace(next);
+        return;
+      }
+
+      const { data } = await supabase.auth.getSession();
       if (!active) {
         return;
       }
 
-      if (error) {
-        router.replace(`/login?error=${encodeURIComponent(error.message)}`);
+      if (data.session) {
+        router.replace(next);
         return;
       }
 
-      router.replace(next);
+      router.replace("/login");
     };
 
     void completeAuth();

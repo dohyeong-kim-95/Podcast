@@ -26,6 +26,7 @@ export function getSupabaseBrowserClient(): SupabaseClient {
       getRequiredEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", supabaseAnonKey),
       {
         auth: {
+          flowType: "pkce",
           persistSession: true,
           autoRefreshToken: true,
           detectSessionInUrl: false,

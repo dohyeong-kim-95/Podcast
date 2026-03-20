@@ -259,7 +259,7 @@ async def start_auth(
         )
 
     try:
-        session = create_browserless_session()
+        session = await create_browserless_session()
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

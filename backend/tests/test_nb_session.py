@@ -62,7 +62,7 @@ def test_start_auth_starts_new_session():
     )
     with _auth_patch(), \
          patch("app.routers.nb_session._read_current_auth_session", return_value=None), \
-         patch("app.routers.nb_session.create_browserless_session", return_value=session), \
+         patch("app.routers.nb_session.create_browserless_session", new=AsyncMock(return_value=session)), \
          patch("app.routers.nb_session._write_auth_session"), \
          patch("app.routers.nb_session._run_auth_flow", new=AsyncMock()):
         response = asyncio.run(_request("POST", "/api/nb-session/start-auth"))

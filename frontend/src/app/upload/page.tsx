@@ -83,8 +83,8 @@ function UploadContent() {
         uploadSucceeded = true;
         uploadedBytes = files[i].size;
         setSources((prev) => [...prev, result]);
-      } catch {
-        nextErrors.push(`${files[i].name}: 업로드 실패`);
+      } catch (err) {
+        nextErrors.push(`${files[i].name}: ${formatUploadError(err)}`);
       } finally {
         processedBytes += uploadSucceeded ? files[i].size : uploadedBytes;
         setUploadProgress({
@@ -205,4 +205,12 @@ function formatBytes(value: number) {
   }
 
   return `${(value / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function formatUploadError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "업로드 실패";
+  if (message === "API error: 401") {
+    return "인증이 만료되었거나 Cloud Run 백엔드가 최신 Supabase 코드로 재배포되지 않았습니다";
+  }
+  return message;
 }

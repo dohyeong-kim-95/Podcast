@@ -3,7 +3,11 @@
 import { useEffect } from "react";
 import { registerPushSubscription } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { getPushSubscriptionForCurrentApp, registerAppServiceWorker } from "@/lib/web-push";
+import {
+  formatPushSubscriptionError,
+  getPushSubscriptionForCurrentApp,
+  registerAppServiceWorker,
+} from "@/lib/web-push";
 
 export default function PwaRegistrar() {
   const { user, verified } = useAuth();
@@ -36,6 +40,11 @@ export default function PwaRegistrar() {
           }
         }
       } catch (error) {
+        const message = formatPushSubscriptionError(error);
+        if (message.includes("NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY")) {
+          console.warn("Skipping push sync until web push public key is fixed");
+          return;
+        }
         console.error("Failed to sync push subscription", error);
       }
     };

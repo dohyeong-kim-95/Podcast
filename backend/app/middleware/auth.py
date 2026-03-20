@@ -1,10 +1,17 @@
+import logging
 import os
 
 from fastapi import Depends, HTTPException, Request
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 
-from app.services.supabase_auth import verify_access_token
+from app.services.supabase_auth import (
+    AuthVerificationServiceError,
+    InvalidAccessTokenError,
+    verify_access_token,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _get_allowed_emails() -> set[str]:
@@ -26,8 +33,14 @@ async def get_current_user(request: Request) -> dict:
 
     try:
         decoded = await verify_access_token(token)
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    except InvalidAccessTokenError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except AuthVerificationServiceError as exc:
+        logger.warning("Supabase auth verification failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Auth verification temporarily unavailable") from exc
+    except Exception as exc:
+        logger.exception("Unexpected auth verification failure")
+        raise HTTPException(status_code=500, detail="Auth verification failed") from exc
 
     email = decoded.get("email", "").lower()
     allowed = _get_allowed_emails()

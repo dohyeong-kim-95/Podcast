@@ -9,6 +9,32 @@ const API_BASE_URL = (
 
 const REQUEST_TIMEOUT_MS = 15000;
 
+async function readErrorMessage(res: Response): Promise<string> {
+  const contentType = res.headers.get("content-type") || "";
+
+  if (contentType.includes("application/json")) {
+    try {
+      const payload = await res.clone().json();
+      if (payload && typeof payload === "object" && "detail" in payload) {
+        return String(payload.detail);
+      }
+    } catch {
+      // Fall back to text or status below.
+    }
+  }
+
+  try {
+    const text = await res.clone().text();
+    if (text) {
+      return text;
+    }
+  } catch {
+    // Ignore and fall back to the status code.
+  }
+
+  return `API error: ${res.status}`;
+}
+
 async function fetchWithTimeout(input: string, init: RequestInit): Promise<Response> {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -34,7 +60,7 @@ export async function apiGet<T>(path: string): Promise<T> {
   const headers = await getAuthHeaders();
   const res = await fetchWithTimeout(`${API_BASE_URL}${path}`, { headers });
   if (!res.ok) {
-    throw new Error(`API error: ${res.status}`);
+    throw new Error(await readErrorMessage(res));
   }
   return res.json();
 }
@@ -47,7 +73,7 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    throw new Error(`API error: ${res.status}`);
+    throw new Error(await readErrorMessage(res));
   }
   return res.json();
 }
@@ -60,7 +86,7 @@ export async function apiPut<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    throw new Error(`API error: ${res.status}`);
+    throw new Error(await readErrorMessage(res));
   }
   return res.json();
 }
@@ -72,7 +98,7 @@ export async function apiDelete<T>(path: string): Promise<T> {
     headers,
   });
   if (!res.ok) {
-    throw new Error(`API error: ${res.status}`);
+    throw new Error(await readErrorMessage(res));
   }
   return res.json();
 }

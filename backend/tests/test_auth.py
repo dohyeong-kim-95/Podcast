@@ -3,6 +3,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.supabase_auth import AuthVerificationServiceError, InvalidAccessTokenError
 
 
 client = TestClient(app)
@@ -31,12 +32,28 @@ def test_verify_requires_bearer_token():
 
 
 def test_verify_rejects_invalid_access_token():
-    with patch("app.middleware.auth.verify_access_token", side_effect=RuntimeError("invalid")):
+    with patch(
+        "app.middleware.auth.verify_access_token",
+        side_effect=InvalidAccessTokenError("Invalid or expired token"),
+    ):
         response = client.post(
             "/api/auth/verify",
             headers={"Authorization": "Bearer bad-token"},
         )
         assert response.status_code == 401
+
+
+def test_verify_returns_503_when_auth_service_unavailable():
+    with patch(
+        "app.middleware.auth.verify_access_token",
+        side_effect=AuthVerificationServiceError("Supabase auth verification timed out"),
+    ):
+        response = client.post(
+            "/api/auth/verify",
+            headers={"Authorization": "Bearer valid-token"},
+        )
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Auth verification temporarily unavailable"
 
 
 def test_verify_returns_user_profile():

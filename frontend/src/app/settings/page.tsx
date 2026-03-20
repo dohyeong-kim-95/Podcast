@@ -15,6 +15,7 @@ import {
   type NbSessionStatusResponse,
 } from "@/lib/api";
 import {
+  formatPushSubscriptionError,
   getNotificationPermissionState,
   getPushSubscriptionForCurrentApp,
   registerAppServiceWorker,
@@ -180,7 +181,7 @@ function SettingsContent() {
         setSessionNotice("새 탭에서 NotebookLM 로그인을 완료하면 이 화면이 자동으로 갱신됩니다.");
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : "재인증을 시작하지 못했습니다";
+      const message = formatApiErrorMessage(err, "재인증을 시작하지 못했습니다");
       setSessionError(message);
     } finally {
       setStarting(false);
@@ -219,7 +220,7 @@ function SettingsContent() {
       setNotificationNotice("알림이 활성화되었습니다. 생성 완료와 리마인더를 받을 수 있습니다.");
       setNotificationPromptArmed(false);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "알림 활성화에 실패했습니다";
+      const message = formatPushSubscriptionError(err);
       setNotificationError(message === "API error: 404" ? "푸시 토큰 등록 API가 아직 연결되지 않았습니다" : message);
       if (typeof Notification !== "undefined" && Notification.permission === "denied") {
         setNotificationNotice("이 사이트 알림이 차단되었습니다. 주소창 왼쪽 사이트 설정에서 알림을 '허용'으로 바꾼 뒤 다시 시도해 주세요.");
@@ -418,6 +419,14 @@ function statusLabel(status?: NbSessionStatusResponse["status"]) {
     default:
       return "확인 중";
   }
+}
+
+function formatApiErrorMessage(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : fallback;
+  if (message === "API error: 401") {
+    return "API 인증에 실패했습니다. 다시 로그인해 보고, 계속되면 Cloud Run 백엔드가 최신 Supabase 코드로 재배포되었는지 확인해 주세요.";
+  }
+  return message;
 }
 
 function notificationPermissionLabel(permission: NotificationPermission | "unsupported" | "checking") {

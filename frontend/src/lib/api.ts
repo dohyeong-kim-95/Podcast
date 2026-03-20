@@ -1,4 +1,5 @@
-import { getFirebaseAuth } from "./firebase";
+import { getSupabaseAccessToken } from "./supabase";
+import type { PushSubscriptionPayload } from "./web-push";
 
 const API_BASE_URL = (
   process.env.NEXT_PUBLIC_API_BASE_URL ||
@@ -7,11 +8,7 @@ const API_BASE_URL = (
 ).replace(/\/+$/, "");
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
-  const user = getFirebaseAuth().currentUser;
-  if (!user) {
-    throw new Error("Not authenticated");
-  }
-  const token = await user.getIdToken();
+  const token = await getSupabaseAccessToken();
   return {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
@@ -70,11 +67,7 @@ export async function apiUpload<T>(
   file: File,
   onProgress?: (uploadedBytes: number) => void,
 ): Promise<T> {
-  const user = getFirebaseAuth().currentUser;
-  if (!user) {
-    throw new Error("Not authenticated");
-  }
-  const token = await user.getIdToken();
+  const token = await getSupabaseAccessToken();
   const formData = new FormData();
   formData.append("file", file);
 
@@ -262,10 +255,12 @@ export async function pollNbSessionAuth(sessionId: string): Promise<NbAuthSessio
   return apiGet(`/api/nb-session/poll/${sessionId}`);
 }
 
-export interface RegisterPushTokenResponse {
+export interface RegisterPushSubscriptionResponse {
   registered: boolean;
 }
 
-export async function registerPushToken(token: string): Promise<RegisterPushTokenResponse> {
-  return apiPost("/api/push-token", { token });
+export async function registerPushSubscription(
+  subscription: PushSubscriptionPayload,
+): Promise<RegisterPushSubscriptionResponse> {
+  return apiPost("/api/push-token", { subscription });
 }

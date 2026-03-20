@@ -22,22 +22,18 @@ Default local URL: `http://localhost:3000`
 Copy from `frontend/.env.example` and set:
 
 ```env
-NEXT_PUBLIC_FIREBASE_API_KEY=...
-NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=podcast.bubblelab.dev
-NEXT_PUBLIC_FIREBASE_PROJECT_ID=dailylmpodcast
-NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=dailylmpodcast.firebasestorage.app
-NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=...
-NEXT_PUBLIC_FIREBASE_APP_ID=...
-NEXT_PUBLIC_FIREBASE_VAPID_KEY=...
+NEXT_PUBLIC_SUPABASE_URL=https://ocjsumocbjrfxgavmjze.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY=...
 NEXT_PUBLIC_API_BASE_URL=https://<cloud-run-service>.run.app
-FIREBASE_AUTH_HELPER_ORIGIN=https://dailylmpodcast.firebaseapp.com
 ```
 
 ## Auth and deployment notes
 
-- `signInWithRedirect()` is used for Google login.
-- On Vercel, `/__/auth/:path*` is rewritten to the Firebase helper origin in [next.config.mjs](./next.config.mjs).
-- `public/sw.js` intentionally skips the reserved `/__/` namespace so the auth helper flow is not intercepted.
+- Supabase Google OAuth is used for login.
+- Add `https://podcast.bubblelab.dev/auth/callback` to Supabase Auth redirect URLs.
+- Add `http://localhost:3000/auth/callback` for local development.
+- `public/sw.js` handles standard Web Push notifications via the browser Push API.
 - Do not set `STATIC_EXPORT=1` for the Vercel production deployment.
 
 ## Build
@@ -48,7 +44,7 @@ npm run build
 
 ## Fallback path
 
-The repo still supports static export for Firebase Hosting when `STATIC_EXPORT=1` is set, but that is a fallback path, not the primary launch target.
+The repo still supports static export when `STATIC_EXPORT=1` is set, but the primary launch path is the Vercel deployment on `https://podcast.bubblelab.dev`.
 
 ## Related docs
 

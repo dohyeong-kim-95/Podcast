@@ -1,17 +1,16 @@
 "use client";
 
 import { useEffect } from "react";
-import { registerPushToken } from "@/lib/api";
+import { registerPushSubscription } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { getPushTokenForCurrentApp, registerAppServiceWorker, subscribeForegroundMessages } from "@/lib/firebase";
+import { getPushSubscriptionForCurrentApp, registerAppServiceWorker } from "@/lib/web-push";
 
 export default function PwaRegistrar() {
   const { user, verified } = useAuth();
 
   useEffect(() => {
     let active = true;
-    let detachForeground: (() => void) | null = null;
-    const tokenCacheKey = user ? `daily-podcast:fcm-token:${user.uid}` : null;
+    const subscriptionCacheKey = user ? `daily-podcast:push-subscription:${user.id}` : null;
 
     const syncPushToken = async () => {
       if (!user || verified !== "verified") {
@@ -24,19 +23,20 @@ export default function PwaRegistrar() {
           return;
         }
 
-        const token = await getPushTokenForCurrentApp(registration);
+        const subscription = await getPushSubscriptionForCurrentApp(registration);
         if (!active) {
           return;
         }
 
-        if (!tokenCacheKey || window.localStorage.getItem(tokenCacheKey) !== token) {
-          await registerPushToken(token);
-          if (tokenCacheKey) {
-            window.localStorage.setItem(tokenCacheKey, token);
+        const serialized = JSON.stringify(subscription);
+        if (!subscriptionCacheKey || window.localStorage.getItem(subscriptionCacheKey) !== serialized) {
+          await registerPushSubscription(subscription);
+          if (subscriptionCacheKey) {
+            window.localStorage.setItem(subscriptionCacheKey, serialized);
           }
         }
       } catch (error) {
-        console.error("Failed to sync push token", error);
+        console.error("Failed to sync push subscription", error);
       }
     };
 
@@ -51,30 +51,8 @@ export default function PwaRegistrar() {
     window.addEventListener("focus", syncPushToken);
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
-    void subscribeForegroundMessages((payload) => {
-      if (!active || typeof Notification === "undefined" || Notification.permission !== "granted") {
-        return;
-      }
-
-      void syncPushToken();
-
-      const title = payload.notification?.title ?? "Daily Podcast";
-      const body = payload.notification?.body;
-      const icon = payload.notification?.icon ?? "/favicon.ico";
-      const link = payload.fcmOptions?.link ?? payload.data?.url ?? "/";
-
-      const notification = new Notification(title, { body, icon, data: { url: link } });
-      notification.onclick = () => {
-        window.focus();
-        window.location.assign(link);
-      };
-    }).then((unsubscribe) => {
-      detachForeground = unsubscribe;
-    });
-
     return () => {
       active = false;
-      detachForeground?.();
       window.removeEventListener("focus", syncPushToken);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };

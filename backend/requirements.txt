@@ -1,6 +1,5 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-firebase-admin==6.6.0
 google-auth==2.37.0
 python-multipart==0.0.20
 img2pdf==0.5.1
@@ -8,3 +7,6 @@ cryptography==44.0.0
 httpx==0.28.1
 notebooklm-py==0.3.4
 playwright==1.51.0
+psycopg[binary]==3.2.9
+supabase==2.15.3
+pywebpush==2.0.3

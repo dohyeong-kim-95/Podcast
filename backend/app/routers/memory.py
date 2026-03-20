@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from app.middleware.auth import get_current_user
-from app.services.firebase import get_firestore_client
+from app.services.db import get_db, json_dumps, utc_now
 
 router = APIRouter(prefix="/api", tags=["memory"])
 
@@ -52,19 +52,86 @@ class MemoryPayload(BaseModel):
 @router.get("/memory", response_model=MemoryResponse)
 async def get_memory(user: dict = Depends(get_current_user)):
     uid = user["uid"]
-    db = get_firestore_client()
-    doc = db.collection("users").document(uid).get()
-    memory = doc.to_dict().get("memory") if doc.exists else None
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            select interests, tone, depth, custom, feedback_history
+            from user_memory
+            where user_id = %s
+            """,
+            (uid,),
+        )
+        row = cur.fetchone()
+
+    memory = None
+    if row:
+        memory = {
+            "interests": row["interests"],
+            "tone": row["tone"],
+            "depth": row["depth"],
+            "custom": row["custom"],
+            "feedbackHistory": row["feedback_history"] or [],
+        }
     return MemoryResponse(**_normalize_memory(memory))
 
 
 @router.put("/memory", response_model=MemoryResponse)
 async def update_memory(payload: MemoryPayload, user: dict = Depends(get_current_user)):
     uid = user["uid"]
-    db = get_firestore_client()
-    user_ref = db.collection("users").document(uid)
-    user_ref.set({"memory": _serialize_memory(payload)}, merge=True)
+    serialized = _serialize_memory(payload)
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into profiles (id)
+            values (%s)
+            on conflict (id) do nothing
+            """,
+            (uid,),
+        )
+        cur.execute(
+            """
+            insert into user_memory (
+                user_id,
+                interests,
+                tone,
+                depth,
+                custom,
+                feedback_history,
+                updated_at
+            )
+            values (%s, %s, %s, %s, %s, %s::jsonb, %s)
+            on conflict (user_id) do update
+            set interests = excluded.interests,
+                tone = excluded.tone,
+                depth = excluded.depth,
+                custom = excluded.custom,
+                updated_at = excluded.updated_at
+            """,
+            (
+                uid,
+                serialized["interests"],
+                serialized["tone"],
+                serialized["depth"],
+                serialized["custom"],
+                json_dumps([]),
+                utc_now(),
+            ),
+        )
+        cur.execute(
+            """
+            select interests, tone, depth, custom, feedback_history
+            from user_memory
+            where user_id = %s
+            """,
+            (uid,),
+        )
+        row = cur.fetchone()
 
-    doc = user_ref.get()
-    memory = doc.to_dict().get("memory") if doc.exists else None
+    memory = {
+        "interests": row["interests"],
+        "tone": row["tone"],
+        "depth": row["depth"],
+        "custom": row["custom"],
+        "feedbackHistory": row["feedback_history"] or [],
+    } if row else None
     return MemoryResponse(**_normalize_memory(memory))

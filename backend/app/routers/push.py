@@ -1,34 +1,46 @@
-"""Push token and download reminder APIs."""
+"""Push subscription and reminder APIs."""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.middleware.auth import get_current_user, verify_scheduler_token
-from app.services.firebase import get_firestore_client
-from app.services.notifications import save_push_token, send_push_to_user
+from app.services.db import get_db, serialize_date
+from app.services.notifications import save_push_subscription, send_push_to_user
 
 router = APIRouter(prefix="/api", tags=["push"])
 
 KST = timezone(timedelta(hours=9))
 
 
-class PushTokenRequest(BaseModel):
-    token: str
+class PushSubscriptionKeys(BaseModel):
+    p256dh: str
+    auth: str
+
+
+class PushSubscriptionPayload(BaseModel):
+    endpoint: str
+    expirationTime: int | None = None
+    keys: PushSubscriptionKeys
+
+
+class PushSubscriptionRequest(BaseModel):
+    subscription: PushSubscriptionPayload
 
 
 @router.post("/push-token")
-async def register_push_token(
-    body: PushTokenRequest,
+async def register_push_subscription(
+    body: PushSubscriptionRequest,
     user: dict = Depends(get_current_user),
 ):
-    """Store the authenticated user's FCM token."""
-    save_push_token(
+    """Store the authenticated user's Web Push subscription."""
+    save_push_subscription(
         user["uid"],
-        body.token,
+        body.subscription.model_dump(),
         email=user.get("email"),
         display_name=user.get("name"),
     )
@@ -41,17 +53,25 @@ async def remind_download(
 ):
     """Send reminders to users who have not downloaded today's podcast."""
     date_str = datetime.now(KST).strftime("%Y-%m-%d")
-    db = get_firestore_client()
 
-    reminded = []
+    reminded: list[str] = []
     skipped = 0
-    for doc in db.collection("podcasts").where("date", "==", date_str).stream():
-        data = doc.to_dict()
-        if data.get("status") != "completed" or data.get("downloaded"):
-            skipped += 1
-            continue
 
-        uid = data.get("uid")
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            select user_id
+            from podcasts
+            where date = %s::date
+              and status = 'completed'
+              and downloaded = false
+            """,
+            (date_str,),
+        )
+        rows = cur.fetchall()
+
+    for row in rows:
+        uid = row.get("user_id")
         if not uid:
             skipped += 1
             continue

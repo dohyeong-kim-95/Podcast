@@ -83,6 +83,6 @@ check_cors_preflight
 
 echo
 echo "Manual checks still required:"
-echo "- Google redirect login on $APP_URL"
+echo "- Supabase Google login on $APP_URL"
 echo "- NotebookLM re-auth flow in /settings"
-echo "- push permission + FCM delivery"
+echo "- push permission + Web Push delivery"

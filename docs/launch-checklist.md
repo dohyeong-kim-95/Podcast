@@ -1,52 +1,47 @@
 # Launch Checklist
 
-이 문서는 `podcast.bubblelab.dev` 기준의 출시 체크리스트입니다. 로컬에서 끝낼 수 있는 일과 콘솔/실기기에서 해야 하는 일을 분리했습니다.
+이 문서는 `podcast.bubblelab.dev` 기준의 Supabase 출시 체크리스트입니다.
 
-## 1. 로컬에서 먼저 확인
+## 1. 로컬 확인
 
-### 코드/문서 정합성
-- [ ] `docs/prd.md`, `docs/trd.md`, `docs/tasks.md`가 현재 방향과 맞는다
-- [ ] `readme.md`가 Vercel + Cloud Run 구조를 기준으로 설명한다
-- [ ] `frontend/.env.example`, `backend/.env.example`이 실제 코드에서 읽는 env와 맞다
-
-### 로컬 검증
+- [ ] `frontend/.env.example`, `backend/.env.example`이 실제 코드와 맞다
+- [ ] [migration_tasks.md](/home/kimdohyeong/Working_kdh/1_Projects/002_notebooklm_py/Podcast/migration_tasks.md), [docs/prd.md](/home/kimdohyeong/Working_kdh/1_Projects/002_notebooklm_py/Podcast/docs/prd.md), [docs/trd.md](/home/kimdohyeong/Working_kdh/1_Projects/002_notebooklm_py/Podcast/docs/trd.md)가 현재 구조와 맞다
 - [ ] `cd frontend && npm run build`
-- [ ] 아래 Docker 명령으로 백엔드 테스트를 실행했다
+- [ ] `python -m compileall backend/app`
+- [ ] `bash -n scripts/smoke-vercel-launch.sh`
 
-```bash
-docker run --rm -v "$PWD:/work" -w /work python:3.11-slim \
-  bash -lc "pip install -q -r backend/requirements.txt pytest && PYTHONPATH=/work/backend pytest backend/tests"
+## 2. Supabase
+
+- [ ] 프로젝트 URL 확인: `https://ocjsumocbjrfxgavmjze.supabase.co`
+- [ ] `Project Settings -> API`에서 `anon key`, `service_role key`를 확보했다
+- [ ] SQL Editor에서 [supabase/migrations/20260320_init.sql](/home/kimdohyeong/Working_kdh/1_Projects/002_notebooklm_py/Podcast/supabase/migrations/20260320_init.sql)을 실행했다
+- [ ] Storage에 private 버킷 `sources`, `podcasts`를 만들었다
+- [ ] `Authentication -> URL Configuration`의 `Site URL`을 `https://podcast.bubblelab.dev`로 설정했다
+- [ ] Google provider를 활성화했다
+- [ ] Google OAuth 클라이언트에 Supabase가 안내하는 callback URL(`https://ocjsumocbjrfxgavmjze.supabase.co/auth/v1/callback`)을 등록했다
+- [ ] Auth redirect URL에 아래를 추가했다
+
+```text
+https://podcast.bubblelab.dev/auth/callback
+http://localhost:3000/auth/callback
 ```
 
-- [ ] `bash -n scripts/smoke-vercel-launch.sh`
-- [ ] 변경된 배포 민감 파일 diff를 수동 검토했다
-
-## 2. Vercel
+## 3. Vercel
 
 - [ ] 저장소를 Vercel에 연결했다
 - [ ] root를 `frontend/`로 설정했다
+- [ ] `podcast.bubblelab.dev`를 연결했다
 - [ ] 아래 env를 입력했다
 
 ```env
-NEXT_PUBLIC_FIREBASE_API_KEY=...
-NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=podcast.bubblelab.dev
-NEXT_PUBLIC_FIREBASE_PROJECT_ID=dailylmpodcast
-NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=dailylmpodcast.firebasestorage.app
-NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=...
-NEXT_PUBLIC_FIREBASE_APP_ID=...
-NEXT_PUBLIC_FIREBASE_VAPID_KEY=...
+NEXT_PUBLIC_SUPABASE_URL=https://ocjsumocbjrfxgavmjze.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY=...
 NEXT_PUBLIC_API_BASE_URL=https://<cloud-run-service>.run.app
-FIREBASE_AUTH_HELPER_ORIGIN=https://dailylmpodcast.firebaseapp.com
 ```
 
-- [ ] `podcast.bubblelab.dev`를 연결했다
 - [ ] `STATIC_EXPORT=1`을 넣지 않았다
-
-## 3. Firebase Console
-
-- [ ] Authentication Authorized domains에 `podcast.bubblelab.dev`를 추가했다
-- [ ] 필요 시 `https://podcast.bubblelab.dev/__/auth/handler` redirect 경로를 확인했다
-- [ ] FCM Web Push용 VAPID 키를 확인했다
+- [ ] env 변경 후 프로덕션을 다시 배포했다
 
 ## 4. Cloud Run
 
@@ -54,6 +49,12 @@ FIREBASE_AUTH_HELPER_ORIGIN=https://dailylmpodcast.firebaseapp.com
 - [ ] 아래 env/secrets가 반영됐다
 
 ```env
+SUPABASE_URL=https://ocjsumocbjrfxgavmjze.supabase.co
+SUPABASE_ANON_KEY=...
+SUPABASE_SERVICE_ROLE_KEY=...
+SUPABASE_DB_URL=postgresql://...
+SUPABASE_STORAGE_BUCKET_SOURCES=sources
+SUPABASE_STORAGE_BUCKET_PODCASTS=podcasts
 ALLOWED_EMAILS=...
 CORS_ORIGINS=https://podcast.bubblelab.dev
 CLOUD_RUN_URL=https://<cloud-run-service>.run.app
@@ -62,14 +63,11 @@ NB_COOKIE_ENCRYPTION_KEY=...
 BROWSERLESS_TOKEN=...
 BROWSERLESS_CONNECT_URL_TEMPLATE=...
 BROWSERLESS_VIEWER_URL_TEMPLATE=...
-NB_AUTH_TARGET_URL=https://notebooklm.google.com
-NB_AUTH_TIMEOUT_SECONDS=300
-AUDIO_TIMEOUT_SECONDS=1200
-GENERATE_MAX_CONCURRENCY=4
-NB_SESSION_EXPIRING_SOON_DAYS=7
+VAPID_PUBLIC_KEY=...
+VAPID_PRIVATE_KEY=...
+VAPID_SUBJECT=mailto:admin@bubblelab.dev
 ```
 
-- [ ] Firestore/Storage/FCM 권한이 있는 서비스 계정을 사용한다
 - [ ] `GET /health`가 200을 반환한다
 
 ## 5. Cloud Scheduler
@@ -81,11 +79,10 @@ NB_SESSION_EXPIRING_SOON_DAYS=7
   - 스케줄: `0 22 * * *`
   - 타임존: `Asia/Seoul`
 - [ ] 두 잡 모두 OIDC로 Cloud Run을 호출한다
-- [ ] 두 잡 모두 수동 실행 테스트를 했다
 
 ## 6. 실기기 검증
 
-- [ ] 아래 스모크 스크립트를 한 번 실행했다
+- [ ] 아래 스모크 스크립트를 실행했다
 
 ```bash
 APP_URL=https://podcast.bubblelab.dev \
@@ -100,41 +97,34 @@ API_URL=https://<cloud-run-service>.run.app \
 - [ ] 오디오 재생/다운로드/피드백 저장 확인
 - [ ] Browserless 새 탭 재인증 성공
 - [ ] PWA 설치 프롬프트 확인
-- [ ] 푸시 권한 허용 및 `push-token` 저장 확인
+- [ ] 알림 권한 허용 및 PushSubscription 저장 확인
 - [ ] 생성 완료 알림 수신 확인
 - [ ] 다운로드 리마인더 알림 수신 확인
 
-## 7. 장애 시 가장 먼저 볼 것
+## 7. 문제 발생 시 우선 확인
 
 ### 로그인 실패
-- `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`
-- Firebase Authorized domains
-- `/__/auth/*` rewrite 동작
+
+- Supabase Google provider 활성화 여부
+- redirect URL 등록 여부
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 
 ### API 호출 실패
+
 - `NEXT_PUBLIC_API_BASE_URL`
 - `CORS_ORIGINS`
 - Cloud Run 배포 URL
 
 ### NotebookLM 재인증 실패
+
 - `BROWSERLESS_TOKEN`
 - `BROWSERLESS_CONNECT_URL_TEMPLATE`
 - `BROWSERLESS_VIEWER_URL_TEMPLATE`
-- 실제 모바일 브라우저의 새 탭 차단 여부
-
-### 스케줄러 실패
-- `CLOUD_RUN_URL`
-- `SCHEDULER_SERVICE_ACCOUNT`
-- Cloud Scheduler OIDC 설정
 
 ### 푸시 미수신
-- VAPID 키
+
+- `NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY`
+- `VAPID_PRIVATE_KEY`
 - 브라우저 알림 권한
-- `push-token` 저장 여부
-- FCM 토큰이 오래된 값인지 여부
-
-## 8. 롤백/우회
-
-- 프론트 배포에 문제가 생기면 Vercel 배포를 되돌리고, API는 그대로 유지합니다
-- Vercel 쪽 Auth helper가 막히면 Firebase Hosting static export 경로는 fallback으로 남아 있지만, 현재 기본 운영 경로는 아닙니다
-- Browserless/FCM은 코드보다 환경값 문제일 가능성이 크므로 먼저 설정을 확인합니다
+- `push_subscriptions` row 저장 여부

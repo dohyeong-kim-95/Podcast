@@ -9,16 +9,16 @@ import { useAuth } from "@/lib/auth-context";
 import {
   getNbSessionStatus,
   pollNbSessionAuth,
-  registerPushToken,
+  registerPushSubscription,
   startNbSessionAuth,
   type NbAuthSessionStatus,
   type NbSessionStatusResponse,
 } from "@/lib/api";
 import {
   getNotificationPermissionState,
-  getPushTokenForCurrentApp,
+  getPushSubscriptionForCurrentApp,
   registerAppServiceWorker,
-} from "@/lib/firebase";
+} from "@/lib/web-push";
 
 export default function SettingsPage() {
   return (
@@ -38,11 +38,11 @@ function SettingsContent() {
   const [sessionNotice, setSessionNotice] = useState<string | null>(null);
   const [pollSessionId, setPollSessionId] = useState<string | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported" | "checking">("checking");
-  const [notificationToken, setNotificationToken] = useState<string | null>(null);
+  const [notificationEndpoint, setNotificationEndpoint] = useState<string | null>(null);
   const [notificationError, setNotificationError] = useState<string | null>(null);
   const [notificationNotice, setNotificationNotice] = useState<string | null>(null);
   const [notificationSaving, setNotificationSaving] = useState(false);
-  const tokenCacheKey = user ? `daily-podcast:fcm-token:${user.uid}` : null;
+  const subscriptionCacheKey = user ? `daily-podcast:push-subscription:${user.id}` : null;
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -66,12 +66,23 @@ function SettingsContent() {
     setNotificationPermission(permission);
 
     if (typeof window === "undefined" || permission !== "granted") {
-      setNotificationToken(null);
+      setNotificationEndpoint(null);
       return;
     }
 
-    setNotificationToken(tokenCacheKey ? window.localStorage.getItem(tokenCacheKey) : null);
-  }, [tokenCacheKey]);
+    const stored = subscriptionCacheKey ? window.localStorage.getItem(subscriptionCacheKey) : null;
+    if (!stored) {
+      setNotificationEndpoint(null);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(stored) as { endpoint?: string };
+      setNotificationEndpoint(parsed.endpoint ?? null);
+    } catch {
+      setNotificationEndpoint(null);
+    }
+  }, [subscriptionCacheKey]);
 
   useEffect(() => {
     refreshStatus();
@@ -186,15 +197,15 @@ function SettingsContent() {
         throw new Error("서비스 워커를 등록하지 못했습니다");
       }
 
-      const token = await getPushTokenForCurrentApp(registration);
-      await registerPushToken(token);
+      const subscription = await getPushSubscriptionForCurrentApp(registration);
+      await registerPushSubscription(subscription);
 
-      if (typeof window !== "undefined" && tokenCacheKey) {
-        window.localStorage.setItem(tokenCacheKey, token);
+      if (typeof window !== "undefined" && subscriptionCacheKey) {
+        window.localStorage.setItem(subscriptionCacheKey, JSON.stringify(subscription));
       }
 
       setNotificationPermission(typeof Notification === "undefined" ? "unsupported" : Notification.permission);
-      setNotificationToken(token);
+      setNotificationEndpoint(subscription.endpoint);
       setNotificationNotice("알림이 활성화되었습니다. 생성 완료와 리마인더를 받을 수 있습니다.");
     } catch (err) {
       const message = err instanceof Error ? err.message : "알림 활성화에 실패했습니다";
@@ -203,7 +214,7 @@ function SettingsContent() {
     } finally {
       setNotificationSaving(false);
     }
-  }, [refreshNotificationState, tokenCacheKey]);
+  }, [refreshNotificationState, subscriptionCacheKey]);
 
   const statusTone = useMemo(() => {
     if (!session) {
@@ -334,9 +345,9 @@ function SettingsContent() {
             </span>
           </div>
 
-          {notificationToken && (
+          {notificationEndpoint && (
             <div className="rounded-lg border border-[#282828] bg-[#121212] px-4 py-3 text-xs text-[#b3b3b3]">
-              등록된 토큰: <span className="text-[#d7d7d7]">{maskToken(notificationToken)}</span>
+              등록된 엔드포인트: <span className="text-[#d7d7d7]">{maskValue(notificationEndpoint)}</span>
             </div>
           )}
 
@@ -404,10 +415,10 @@ function notificationPermissionLabel(permission: NotificationPermission | "unsup
   }
 }
 
-function maskToken(token: string) {
-  if (token.length <= 12) {
-    return token;
+function maskValue(value: string) {
+  if (value.length <= 12) {
+    return value;
   }
 
-  return `${token.slice(0, 8)}...${token.slice(-8)}`;
+  return `${value.slice(0, 8)}...${value.slice(-8)}`;
 }

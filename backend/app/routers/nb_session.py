@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from app.middleware.auth import get_current_user
 from app.services.browserless import BrowserlessSession, create_browserless_session, wait_for_notebook_login
-from app.services.firebase import get_firestore_client
+from app.services.db import get_db, serialize_timestamp
 from app.services.notebook import derive_nb_session_status, save_nb_session
 
 logger = logging.getLogger(__name__)
@@ -45,43 +45,121 @@ class NBSessionStatusResponse(BaseModel):
     authSession: NBAuthPollResponse | None = None
 
 
-def _serialize_timestamp(value: Any) -> str | None:
-    if value and hasattr(value, "isoformat"):
-        normalized = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-        return normalized.isoformat()
-    return None
-
-
-def _session_doc_refs(uid: str, session_id: str):
-    db = get_firestore_client()
-    base = db.collection("users").document(uid).collection("nb_auth_sessions")
-    return base.document(session_id), base.document("current")
-
-
 def _write_auth_session(uid: str, session_id: str, payload: dict[str, Any]) -> None:
-    session_ref, current_ref = _session_doc_refs(uid, session_id)
-    session_ref.set(payload, merge=True)
-    current_ref.set({"sessionId": session_id, **payload}, merge=True)
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into profiles (id)
+            values (%s)
+            on conflict (id) do nothing
+            """,
+            (uid,),
+        )
+        cur.execute(
+            """
+            insert into nb_auth_sessions (
+                session_id,
+                user_id,
+                status,
+                viewer_url,
+                auth_flow,
+                started_at,
+                updated_at,
+                completed_at,
+                error,
+                nb_session_status,
+                expires_at
+            )
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict (session_id) do update
+            set status = excluded.status,
+                viewer_url = excluded.viewer_url,
+                auth_flow = excluded.auth_flow,
+                started_at = coalesce(nb_auth_sessions.started_at, excluded.started_at),
+                updated_at = excluded.updated_at,
+                completed_at = excluded.completed_at,
+                error = excluded.error,
+                nb_session_status = excluded.nb_session_status,
+                expires_at = excluded.expires_at
+            """,
+            (
+                session_id,
+                uid,
+                payload.get("status", "pending"),
+                payload.get("viewerUrl", ""),
+                payload.get("authFlow", "new_tab"),
+                payload.get("startedAt"),
+                payload.get("updatedAt"),
+                payload.get("completedAt"),
+                payload.get("error"),
+                payload.get("nbSessionStatus"),
+                payload.get("expiresAt"),
+            ),
+        )
 
 
 def _read_auth_session(uid: str, session_id: str) -> dict[str, Any] | None:
-    session_ref, _ = _session_doc_refs(uid, session_id)
-    doc = session_ref.get()
-    if not doc.exists:
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            select
+                session_id,
+                status,
+                viewer_url,
+                auth_flow,
+                error,
+                completed_at
+            from nb_auth_sessions
+            where user_id = %s and session_id = %s
+            """,
+            (uid, session_id),
+        )
+        row = cur.fetchone()
+
+    if not row:
         return None
-    return {"sessionId": doc.id, **doc.to_dict()}
+
+    return {
+        "sessionId": row["session_id"],
+        "status": row["status"],
+        "viewerUrl": row["viewer_url"],
+        "authFlow": row["auth_flow"],
+        "error": row["error"],
+        "completedAt": row["completed_at"],
+    }
 
 
 def _read_current_auth_session(uid: str) -> dict[str, Any] | None:
-    db = get_firestore_client()
-    doc = db.collection("users").document(uid).collection("nb_auth_sessions").document("current").get()
-    if not doc.exists:
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            select
+                session_id,
+                status,
+                viewer_url,
+                auth_flow,
+                error,
+                completed_at
+            from nb_auth_sessions
+            where user_id = %s
+            order by updated_at desc
+            limit 1
+            """,
+            (uid,),
+        )
+        row = cur.fetchone()
+
+    if not row:
         return None
-    data = doc.to_dict()
-    session_id = data.get("sessionId")
-    if not session_id:
-        return None
-    return {"sessionId": session_id, **data}
+
+    return {
+        "sessionId": row["session_id"],
+        "status": row["status"],
+        "viewerUrl": row["viewer_url"],
+        "authFlow": row["auth_flow"],
+        "error": row["error"],
+        "completedAt": row["completed_at"],
+    }
 
 
 def _poll_response(data: dict[str, Any]) -> NBAuthPollResponse:
@@ -95,11 +173,12 @@ def _poll_response(data: dict[str, Any]) -> NBAuthPollResponse:
         viewerUrl=data.get("viewerUrl", ""),
         authFlow=data.get("authFlow", "new_tab"),
         error=data.get("error"),
-        completedAt=_serialize_timestamp(data.get("completedAt")),
+        completedAt=serialize_timestamp(data.get("completedAt")),
     )
 
 
 async def _run_auth_flow(uid: str, session: BrowserlessSession) -> None:
+    now = datetime.now(timezone.utc)
     _write_auth_session(
         uid,
         session.session_id,
@@ -107,7 +186,7 @@ async def _run_auth_flow(uid: str, session: BrowserlessSession) -> None:
             "status": "running",
             "viewerUrl": session.viewer_url,
             "authFlow": "new_tab",
-            "updatedAt": datetime.now(timezone.utc),
+            "updatedAt": now,
             "error": None,
         },
     )
@@ -115,6 +194,7 @@ async def _run_auth_flow(uid: str, session: BrowserlessSession) -> None:
     try:
         storage_state = await wait_for_notebook_login(session)
         session_meta = await save_nb_session(uid, storage_state, auth_flow="new_tab")
+        completed_at = datetime.now(timezone.utc)
         _write_auth_session(
             uid,
             session.session_id,
@@ -122,14 +202,15 @@ async def _run_auth_flow(uid: str, session: BrowserlessSession) -> None:
                 "status": "completed",
                 "viewerUrl": session.viewer_url,
                 "authFlow": "new_tab",
-                "updatedAt": datetime.now(timezone.utc),
-                "completedAt": datetime.now(timezone.utc),
+                "updatedAt": completed_at,
+                "completedAt": completed_at,
                 "error": None,
                 "nbSessionStatus": session_meta["status"],
                 "expiresAt": session_meta["expiresAt"],
             },
         )
     except TimeoutError as exc:
+        completed_at = datetime.now(timezone.utc)
         logger.warning("NB re-auth timed out for user %s session %s", uid, session.session_id)
         _write_auth_session(
             uid,
@@ -138,12 +219,13 @@ async def _run_auth_flow(uid: str, session: BrowserlessSession) -> None:
                 "status": "timed_out",
                 "viewerUrl": session.viewer_url,
                 "authFlow": "new_tab",
-                "updatedAt": datetime.now(timezone.utc),
-                "completedAt": datetime.now(timezone.utc),
+                "updatedAt": completed_at,
+                "completedAt": completed_at,
                 "error": str(exc),
             },
         )
     except Exception as exc:
+        completed_at = datetime.now(timezone.utc)
         logger.exception("NB re-auth failed for user %s session %s", uid, session.session_id)
         _write_auth_session(
             uid,
@@ -152,8 +234,8 @@ async def _run_auth_flow(uid: str, session: BrowserlessSession) -> None:
                 "status": "failed",
                 "viewerUrl": session.viewer_url,
                 "authFlow": "new_tab",
-                "updatedAt": datetime.now(timezone.utc),
-                "completedAt": datetime.now(timezone.utc),
+                "updatedAt": completed_at,
+                "completedAt": completed_at,
                 "error": str(exc),
             },
         )
@@ -222,28 +304,35 @@ async def get_nb_session_status(
 ):
     """Get the current NB session status and whether re-auth is in progress."""
     uid = user["uid"]
-    db = get_firestore_client()
-    doc = db.collection("users").document(uid).collection("nb_session").document("current").get()
+
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            select auth_flow, expires_at, last_updated, status
+            from nb_sessions
+            where user_id = %s
+            """,
+            (uid,),
+        )
+        row = cur.fetchone()
 
     status = "missing"
     auth_flow = None
     expires_at = None
     last_updated = None
 
-    if doc.exists:
-        data = doc.to_dict()
-        auth_flow = data.get("authFlow")
-        expires_at = data.get("expiresAt")
-        last_updated = data.get("lastUpdated")
-        status = derive_nb_session_status(expires_at, data.get("status", ""))
+    if row:
+        auth_flow = row.get("auth_flow")
+        expires_at = row.get("expires_at")
+        last_updated = row.get("last_updated")
+        status = derive_nb_session_status(expires_at, row.get("status", ""))
 
     current = _read_current_auth_session(uid)
-    auth_in_progress = bool(current and current.get("status") in _ACTIVE_AUTH_STATUSES)
 
     return NBSessionStatusResponse(
         status=status,
         authFlow=auth_flow,
-        expiresAt=_serialize_timestamp(expires_at),
-        lastUpdated=_serialize_timestamp(last_updated),
+        expiresAt=serialize_timestamp(expires_at),
+        lastUpdated=serialize_timestamp(last_updated),
         authSession=_poll_response(current) if current else None,
     )

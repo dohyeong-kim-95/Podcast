@@ -24,10 +24,6 @@ self.addEventListener("fetch", (event) => {
   }
 
   const requestUrl = new URL(event.request.url);
-  if (requestUrl.origin === self.location.origin && requestUrl.pathname.startsWith("/__/")) {
-    return;
-  }
-
   if (event.request.mode === "navigate") {
     event.respondWith(
       fetch(event.request).catch(async () => {
@@ -59,14 +55,40 @@ self.addEventListener("fetch", (event) => {
   );
 });
 
+self.addEventListener("push", (event) => {
+  let payload = {};
+
+  if (event.data) {
+    try {
+      payload = event.data.json();
+    } catch (_error) {
+      payload = { body: event.data.text() };
+    }
+  }
+
+  const title = payload.title || payload.notification?.title || "Daily Podcast";
+  const body = payload.body || payload.notification?.body || "";
+  const icon = payload.icon || payload.notification?.icon || "/favicon.ico";
+  const targetUrl =
+    payload.url ||
+    payload.link ||
+    payload.data?.url ||
+    payload.notification?.data?.url ||
+    "/";
+
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      icon,
+      data: { url: targetUrl },
+    }),
+  );
+});
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const notificationData = event.notification?.data || {};
-  const targetUrl =
-    notificationData.url ||
-    notificationData.FCM_MSG?.data?.url ||
-    notificationData.FCM_MSG?.fcmOptions?.link ||
-    "/";
+  const targetUrl = notificationData.url || "/";
 
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {

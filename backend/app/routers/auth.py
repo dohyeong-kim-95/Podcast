@@ -8,7 +8,7 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 @router.post("/verify")
 async def verify(user: dict = Depends(get_current_user)):
-    """Firebase ID 토큰을 검증하고 사용자 정보를 반환."""
+    """Supabase access token을 검증하고 사용자 정보를 반환."""
     uid = user.get("uid")
     upsert_user_profile(uid, user.get("email"), user.get("name"))
 

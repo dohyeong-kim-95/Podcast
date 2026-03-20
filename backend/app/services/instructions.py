@@ -16,7 +16,7 @@ def build_instructions(memory: dict[str, Any] | None) -> str:
     """Build NotebookLM audio generation instructions from user memory.
 
     Args:
-        memory: User memory dict from Firestore (may be None or empty).
+        memory: User memory dict from Postgres-backed profile state (may be None or empty).
 
     Returns:
         Formatted instruction string for NotebookLM audio generation.

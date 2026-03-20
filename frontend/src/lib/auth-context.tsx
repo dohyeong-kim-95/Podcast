@@ -8,17 +8,20 @@ import {
   type ReactNode,
 } from "react";
 import {
-  GoogleAuthProvider,
-  onAuthStateChanged,
-  signInWithRedirect,
-  getRedirectResult,
-  signOut as firebaseSignOut,
+  type AuthChangeEvent,
+  type Session,
   type User,
-} from "firebase/auth";
-import { getFirebaseAuth } from "./firebase";
+} from "@supabase/supabase-js";
+import { getSupabaseBrowserClient } from "./supabase";
+
+export interface AppUser {
+  id: string;
+  email: string | null;
+  displayName: string | null;
+}
 
 interface AuthContextType {
-  user: User | null;
+  user: AppUser | null;
   loading: boolean;
   verified: "idle" | "pending" | "verified" | "denied";
   signInWithGoogle: () => Promise<void>;
@@ -40,28 +43,54 @@ const API_BASE = (
 ).replace(/\/+$/, "");
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [verified, setVerified] = useState<"idle" | "pending" | "verified" | "denied">("idle");
 
-  // Handle redirect result on mount
-  useEffect(() => {
-    const auth = getFirebaseAuth();
-    getRedirectResult(auth).catch(() => {
-      // No redirect result or error — ignore
-    });
-  }, []);
+  const mapUser = (value: User | null): AppUser | null => {
+    if (!value) {
+      return null;
+    }
+
+    return {
+      id: value.id,
+      email: value.email ?? null,
+      displayName:
+        value.user_metadata?.full_name ??
+        value.user_metadata?.name ??
+        value.user_metadata?.user_name ??
+        null,
+    };
+  };
 
   useEffect(() => {
-    const auth = getFirebaseAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
+    const supabase = getSupabaseBrowserClient();
+
+    const applySession = (session: Session | null) => {
+      setUser(mapUser(session?.user ?? null));
       setLoading(false);
-      if (!u) {
+      if (!session?.user) {
         setVerified("idle");
       }
-    });
-    return unsubscribe;
+    };
+
+    supabase.auth.getSession()
+      .then(({ data }) => {
+        applySession(data.session);
+      })
+      .catch(() => {
+        setLoading(false);
+      });
+
+    const { data } = supabase.auth.onAuthStateChange(
+      (_event: AuthChangeEvent, session: Session | null) => {
+        applySession(session);
+      },
+    );
+
+    return () => {
+      data.subscription.unsubscribe();
+    };
   }, []);
 
   // Verify with backend when user signs in
@@ -73,7 +102,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const verifyWithBackend = async () => {
       setVerified("pending");
       try {
-        const token = await user.getIdToken();
+        const { data } = await getSupabaseBrowserClient().auth.getSession();
+        const token = data.session?.access_token;
+        if (!token) {
+          if (!cancelled) {
+            setVerified("idle");
+          }
+          return;
+        }
+
         const res = await fetch(`${API_BASE}/api/auth/verify`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token}` },
@@ -83,7 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setVerified("verified");
         } else if (res.status === 403) {
           setVerified("denied");
-          await firebaseSignOut(getFirebaseAuth());
+          await getSupabaseBrowserClient().auth.signOut();
         } else {
           // Other errors — treat as unverified but don't sign out
           setVerified("idle");
@@ -97,12 +134,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user, verified]);
 
   const signInWithGoogle = async () => {
-    const provider = new GoogleAuthProvider();
-    await signInWithRedirect(getFirebaseAuth(), provider);
+    const redirectTo = `${window.location.origin}/auth/callback`;
+    const { error } = await getSupabaseBrowserClient().auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo },
+    });
+
+    if (error) {
+      throw error;
+    }
   };
 
   const signOut = async () => {
-    await firebaseSignOut(getFirebaseAuth());
+    await getSupabaseBrowserClient().auth.signOut();
   };
 
   return (

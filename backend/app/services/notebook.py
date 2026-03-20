@@ -11,9 +11,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
-from firebase_admin import firestore
 
-from app.services.firebase import get_firestore_client
+from app.services.db import get_db, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +52,7 @@ def decrypt_storage_state(encrypted: str) -> dict:
 
 
 def encrypt_storage_state(storage_state: dict[str, Any]) -> str:
-    """Encrypt NotebookLM storage state for Firestore persistence."""
+    """Encrypt NotebookLM storage state for Postgres persistence."""
     f = _get_fernet()
     payload = json.dumps(storage_state).encode()
     return f.encrypt(payload).decode()
@@ -93,18 +92,38 @@ async def save_nb_session(
     expires_in_days: int = 30,
 ) -> dict[str, Any]:
     """Persist the current NB session for a user."""
-    db = get_firestore_client()
-    now = datetime.now(timezone.utc)
+    now = utc_now()
     expires_at = now + timedelta(days=expires_in_days)
     encrypted = encrypt_storage_state(storage_state)
-    data = {
-        "storageState": encrypted,
-        "lastUpdated": firestore.SERVER_TIMESTAMP,
-        "expiresAt": expires_at,
-        "status": "valid",
-        "authFlow": auth_flow,
-    }
-    db.collection("users").document(uid).collection("nb_session").document("current").set(data, merge=True)
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into profiles (id)
+            values (%s)
+            on conflict (id) do nothing
+            """,
+            (uid,),
+        )
+        cur.execute(
+            """
+            insert into nb_sessions (
+                user_id,
+                storage_state,
+                auth_flow,
+                status,
+                expires_at,
+                last_updated
+            )
+            values (%s, %s, %s, %s, %s, %s)
+            on conflict (user_id) do update
+            set storage_state = excluded.storage_state,
+                auth_flow = excluded.auth_flow,
+                status = excluded.status,
+                expires_at = excluded.expires_at,
+                last_updated = excluded.last_updated
+            """,
+            (uid, encrypted, auth_flow, "valid", expires_at, now),
+        )
     return {
         "status": "valid",
         "expiresAt": expires_at,
@@ -113,7 +132,7 @@ async def save_nb_session(
 
 
 async def load_nb_session(uid: str) -> dict[str, Any]:
-    """Load and validate NB session from Firestore.
+    """Load and validate NB session from Postgres.
 
     Returns:
         Dict with 'storageState' (decrypted) and session metadata.
@@ -121,39 +140,42 @@ async def load_nb_session(uid: str) -> dict[str, Any]:
     Raises:
         ValueError: If session is missing, expired, or invalid.
     """
-    db = get_firestore_client()
-    doc_ref = db.collection("users").document(uid).collection("nb_session").document("current")
-    doc = doc_ref.get()
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            select storage_state, status, expires_at, auth_flow, last_updated
+            from nb_sessions
+            where user_id = %s
+            """,
+            (uid,),
+        )
+        data = cur.fetchone()
 
-    if not doc.exists:
+    if not data:
         raise ValueError("NB session not found")
 
-    data = doc.to_dict()
-    status = derive_nb_session_status(data.get("expiresAt"), data.get("status", ""))
+    status = derive_nb_session_status(data.get("expires_at"), data.get("status", ""))
     if status == "expired":
         raise ValueError("NB session expired (status)")
 
-    # T-035: Check expiresAt server-side regardless of status field
-    expires_at = data.get("expiresAt")
+    expires_at = data.get("expires_at")
     if expires_at is not None:
-        # Firestore timestamps come as datetime objects
         if hasattr(expires_at, "timestamp"):
             exp = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
             if exp <= datetime.now(timezone.utc):
                 raise ValueError("NB session expired (expiresAt)")
 
-    encrypted = data.get("storageState", "")
+    encrypted = data.get("storage_state", "")
     if not encrypted:
         raise ValueError("NB session storage state is empty")
 
-    # T-036: decrypt_storage_state now normalizes all decryption errors to ValueError
     storage_state = decrypt_storage_state(encrypted)
     return {
         "storageState": storage_state,
         "status": status,
         "expiresAt": expires_at,
-        "authFlow": data.get("authFlow", ""),
-        "lastUpdated": data.get("lastUpdated"),
+        "authFlow": data.get("auth_flow", ""),
+        "lastUpdated": data.get("last_updated"),
     }
 
 

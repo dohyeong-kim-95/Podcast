@@ -1,11 +1,10 @@
 import os
-from typing import Optional
 
 from fastapi import Depends, HTTPException, Request
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 
-from app.services.firebase import verify_id_token
+from app.services.supabase_auth import verify_access_token
 
 
 def _get_allowed_emails() -> set[str]:
@@ -14,7 +13,7 @@ def _get_allowed_emails() -> set[str]:
 
 
 async def get_current_user(request: Request) -> dict:
-    """Firebase ID token 검증 + 이메일 화이트리스트 체크.
+    """Supabase access token 검증 + 이메일 화이트리스트 체크.
 
     사용자 API용 의존성.
     Returns decoded token claims dict with uid, email, etc.
@@ -26,7 +25,7 @@ async def get_current_user(request: Request) -> dict:
     token = auth_header.split("Bearer ", 1)[1]
 
     try:
-        decoded = verify_id_token(token)
+        decoded = await verify_access_token(token)
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 

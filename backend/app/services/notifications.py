@@ -1,100 +1,126 @@
-"""Push notification helpers for reminder and generation events."""
+"""Web Push notification helpers."""
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+from typing import Any
 
-from firebase_admin import firestore, messaging
+from pywebpush import WebPushException, webpush
 
-from app.services.firebase import get_firestore_client
+from app.services.db import get_db, json_dumps, utc_now
 
 logger = logging.getLogger(__name__)
 
 
+def _vapid_private_key() -> str:
+    value = os.getenv("VAPID_PRIVATE_KEY", "").strip()
+    if not value:
+        raise RuntimeError("VAPID_PRIVATE_KEY not configured")
+    return value
+
+
+def _vapid_subject() -> str:
+    value = os.getenv("VAPID_SUBJECT", "").strip()
+    if not value:
+        raise RuntimeError("VAPID_SUBJECT not configured")
+    return value
+
+
 def upsert_user_profile(uid: str, email: str | None, display_name: str | None) -> None:
-    """Ensure the Firestore user profile exists for later scheduler/push flows."""
-    db = get_firestore_client()
-    db.collection("users").document(uid).set(
-        {
-            "email": email,
-            "displayName": display_name,
-            "createdAt": firestore.SERVER_TIMESTAMP,
-            "lastLoginAt": firestore.SERVER_TIMESTAMP,
-        },
-        merge=True,
-    )
+    now = utc_now()
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into profiles (id, email, display_name, created_at, last_login_at)
+            values (%s, %s, %s, %s, %s)
+            on conflict (id) do update
+            set email = excluded.email,
+                display_name = excluded.display_name,
+                last_login_at = excluded.last_login_at
+            """,
+            (uid, email, display_name, now, now),
+        )
 
 
-def save_push_token(uid: str, token: str, *, email: str | None = None, display_name: str | None = None) -> None:
-    """Store or refresh a user's FCM token."""
-    db = get_firestore_client()
-    db.collection("users").document(uid).set(
-        {
-            "email": email,
-            "displayName": display_name,
-            "createdAt": firestore.SERVER_TIMESTAMP,
-            "lastLoginAt": firestore.SERVER_TIMESTAMP,
-            "fcmToken": token,
-            "fcmTokenUpdatedAt": firestore.SERVER_TIMESTAMP,
-        },
-        merge=True,
-    )
+def save_push_subscription(
+    uid: str,
+    subscription: dict[str, Any],
+    *,
+    email: str | None = None,
+    display_name: str | None = None,
+) -> None:
+    endpoint = subscription.get("endpoint")
+    if not endpoint:
+        raise ValueError("Push subscription endpoint missing")
+
+    upsert_user_profile(uid, email, display_name)
+
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into push_subscriptions (user_id, endpoint, subscription, updated_at)
+            values (%s, %s, %s::jsonb, %s)
+            on conflict (user_id) do update
+            set endpoint = excluded.endpoint,
+                subscription = excluded.subscription,
+                updated_at = excluded.updated_at
+            """,
+            (uid, endpoint, json_dumps(subscription), utc_now()),
+        )
 
 
-def clear_push_token(uid: str) -> None:
-    """Remove an invalid FCM token."""
-    db = get_firestore_client()
-    db.collection("users").document(uid).set(
-        {
-            "fcmToken": firestore.DELETE_FIELD,
-            "fcmTokenUpdatedAt": firestore.SERVER_TIMESTAMP,
-        },
-        merge=True,
-    )
+def clear_push_subscription(uid: str) -> None:
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute("delete from push_subscriptions where user_id = %s", (uid,))
 
 
-def get_push_token(uid: str) -> str | None:
-    """Look up a user's current FCM token."""
-    db = get_firestore_client()
-    doc = db.collection("users").document(uid).get()
-    if not doc.exists:
-        return None
-    return doc.to_dict().get("fcmToken")
+def get_push_subscription(uid: str) -> dict[str, Any] | None:
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "select subscription from push_subscriptions where user_id = %s",
+            (uid,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return row["subscription"]
 
 
-def _is_invalid_token_error(exc: Exception) -> bool:
+def _is_invalid_subscription_error(exc: Exception) -> bool:
+    if isinstance(exc, WebPushException):
+        response = getattr(exc, "response", None)
+        if response is not None and getattr(response, "status_code", None) in {404, 410}:
+            return True
     text = str(exc).upper()
-    return "UNREGISTERED" in text or "REGISTRATION TOKEN" in text or "INVALID_ARGUMENT" in text
+    return "UNREGISTERED" in text or "410" in text or "404" in text
 
 
 def send_push_to_user(uid: str, *, title: str, body: str, link: str = "/") -> bool:
-    """Send a web push notification to a user if a valid token exists."""
-    token = get_push_token(uid)
-    if not token:
+    subscription = get_push_subscription(uid)
+    if not subscription:
         return False
 
-    message = messaging.Message(
-        token=token,
-        data={"url": link},
-        notification=messaging.Notification(title=title, body=body),
-        webpush=messaging.WebpushConfig(
-            headers={"Urgency": "high"},
-            data={"url": link},
-            notification=messaging.WebpushNotification(
-                title=title,
-                body=body,
-                data={"url": link},
-            ),
-            fcm_options=messaging.WebpushFCMOptions(link=link),
-        ),
-    )
+    payload = {
+        "title": title,
+        "body": body,
+        "data": {"url": link},
+    }
 
     try:
-        messaging.send(message)
+        webpush(
+            subscription_info=subscription,
+            data=json.dumps(payload),
+            vapid_private_key=_vapid_private_key(),
+            vapid_claims={"sub": _vapid_subject()},
+            ttl=60,
+        )
         return True
-    except Exception as exc:  # pragma: no cover - provider-specific typing
-        if _is_invalid_token_error(exc):
-            logger.warning("Clearing invalid FCM token for %s: %s", uid, exc)
-            clear_push_token(uid)
+    except Exception as exc:  # pragma: no cover - provider-specific behavior
+        if _is_invalid_subscription_error(exc):
+            logger.warning("Clearing invalid push subscription for %s: %s", uid, exc)
+            clear_push_subscription(uid)
             return False
         raise
+

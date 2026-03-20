@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-import httpx
+import jwt
 
 
 class InvalidAccessTokenError(Exception):
@@ -25,43 +25,54 @@ def _supabase_url() -> str:
     return value.rstrip("/")
 
 
-def _supabase_auth_key() -> str:
-    value = (
-        _normalize_env_value(os.getenv("SUPABASE_ANON_KEY", ""))
-        or _normalize_env_value(os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
-    )
-    if not value:
-        raise RuntimeError("SUPABASE_ANON_KEY or SUPABASE_SERVICE_ROLE_KEY not configured")
-    return value
+def _supabase_auth_issuer() -> str:
+    return f"{_supabase_url()}/auth/v1"
+
+
+def _jwks_url() -> str:
+    return f"{_supabase_auth_issuer()}/.well-known/jwks.json"
+
+
+def _jwks_client() -> jwt.PyJWKClient:
+    return jwt.PyJWKClient(_jwks_url(), cache_jwk_set=True, lifespan=300, timeout=10)
+
+
+def _decode_claims(token: str) -> dict[str, Any]:
+    try:
+        header = jwt.get_unverified_header(token)
+    except jwt.InvalidTokenError as exc:
+        raise InvalidAccessTokenError("Invalid or expired token") from exc
+
+    algorithm = header.get("alg")
+    key_id = header.get("kid")
+    if not algorithm or not key_id or algorithm.upper() == "HS256":
+        raise AuthVerificationServiceError(
+            "Supabase project must use asymmetric JWT signing keys (RS256/ES256)"
+        )
+
+    try:
+        signing_key = _jwks_client().get_signing_key_from_jwt(token)
+        return jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=[algorithm],
+            audience="authenticated",
+            issuer=_supabase_auth_issuer(),
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise InvalidAccessTokenError("Invalid or expired token") from exc
+    except jwt.InvalidTokenError as exc:
+        raise InvalidAccessTokenError("Invalid or expired token") from exc
+    except Exception as exc:
+        raise AuthVerificationServiceError("Supabase JWKS verification failed") from exc
 
 
 async def verify_access_token(token: str) -> dict[str, Any]:
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                f"{_supabase_url()}/auth/v1/user",
-                headers={
-                    "apikey": _supabase_auth_key(),
-                    "Authorization": f"Bearer {token}",
-                },
-            )
-    except httpx.TimeoutException as exc:
-        raise AuthVerificationServiceError("Supabase auth verification timed out") from exc
-    except httpx.HTTPError as exc:
-        raise AuthVerificationServiceError("Supabase auth verification request failed") from exc
-
-    if response.status_code in {401, 403}:
-        raise InvalidAccessTokenError("Invalid or expired token")
-    if response.is_error:
-        raise AuthVerificationServiceError(
-            f"Supabase auth verification failed with status {response.status_code}"
-        )
-
-    user = response.json()
-    metadata = user.get("user_metadata") or {}
+    claims = _decode_claims(token)
+    metadata = claims.get("user_metadata") or {}
     return {
-        "uid": user.get("id"),
-        "email": user.get("email"),
+        "uid": claims.get("sub"),
+        "email": claims.get("email"),
         "name": metadata.get("full_name") or metadata.get("name"),
-        "raw": user,
+        "raw": claims,
     }

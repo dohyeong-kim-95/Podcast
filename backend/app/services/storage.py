@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import io
+import logging
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
+from PIL import Image
 
 from app.services.db import get_db, serialize_date, serialize_timestamp, utc_now
 
 KST = timezone(timedelta(hours=9))
+logger = logging.getLogger(__name__)
 
 ALLOWED_MIME_TYPES = {
     "application/pdf",
@@ -87,6 +91,33 @@ def validate_file_content(file_bytes: bytes, content_type: str) -> bool:
                 return len(file_bytes) >= 12 and file_bytes[8:12] == b"WEBP"
             return True
     return False
+
+
+def _image_to_pdf_bytes(payload: bytes) -> bytes:
+    with Image.open(io.BytesIO(payload)) as image:
+        image.load()
+        prepared = image
+        should_close_prepared = False
+
+        has_alpha = image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info)
+        if has_alpha:
+            rgba_image = image.convert("RGBA")
+            background = Image.new("RGB", rgba_image.size, (255, 255, 255))
+            background.paste(rgba_image, mask=rgba_image.getchannel("A"))
+            prepared = background
+            rgba_image.close()
+            should_close_prepared = True
+        elif image.mode != "RGB":
+            prepared = image.convert("RGB")
+            should_close_prepared = True
+
+        try:
+            buffer = io.BytesIO()
+            prepared.save(buffer, format="PDF", resolution=100.0)
+            return buffer.getvalue()
+        finally:
+            if should_close_prepared:
+                prepared.close()
 
 
 def upload_bytes(bucket: str, path: str, payload: bytes, *, content_type: str) -> None:
@@ -193,11 +224,7 @@ async def convert_image_to_pdf(
     image_source: bytes | str | os.PathLike[str],
     original_storage_path: str,
 ) -> str:
-    import img2pdf as _img2pdf
-
-    pdf_bytes = _img2pdf.convert(
-        os.fspath(image_source) if isinstance(image_source, (str, os.PathLike)) else image_source
-    )
+    pdf_bytes = _image_to_pdf_bytes(_read_bytes(image_source))
     pdf_path = original_storage_path.rsplit(".", 1)[0] + ".pdf"
 
     upload_bytes(_sources_bucket(), pdf_path, pdf_bytes, content_type="application/pdf")
@@ -271,12 +298,15 @@ async def delete_source(uid: str, source_id: str) -> bool:
         if not row:
             return False
 
+        cur.execute("delete from sources where id = %s and user_id = %s", (source_id, uid))
+
+    try:
         delete_paths(
             _sources_bucket(),
             [row["original_storage_path"], row["converted_storage_path"]],
         )
-
-        cur.execute("delete from sources where id = %s and user_id = %s", (source_id, uid))
+    except Exception:
+        logger.exception("Source storage cleanup failed for %s", source_id)
 
     return True
 

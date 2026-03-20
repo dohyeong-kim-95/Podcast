@@ -1,10 +1,13 @@
 import os
+import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.routers import auth, memory, nb_session, podcast, push, sources
 
+logger = logging.getLogger(__name__)
 
 def _get_cors_origins() -> list[str]:
     raw = os.getenv("CORS_ORIGINS", "")
@@ -32,3 +35,12 @@ app.include_router(push.router)
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request, exc: Exception):
+    logger.exception("Unhandled API error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc) or "Internal server error"},
+    )

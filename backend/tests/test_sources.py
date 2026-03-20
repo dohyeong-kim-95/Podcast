@@ -4,10 +4,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import UploadFile
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app.main import app
 from app.routers.sources import _spill_upload_to_tempfile
-from app.services.storage import validate_file_content
+from app.services.storage import delete_source, validate_file_content, _image_to_pdf_bytes
 
 
 client = TestClient(app)
@@ -160,6 +161,27 @@ def test_delete_source_success():
     assert response.json() == {"deleted": True, "sourceId": "src-1"}
 
 
+def test_delete_source_keeps_db_delete_when_storage_cleanup_fails():
+    cursor = MagicMock()
+    cursor.fetchone.return_value = {
+        "original_storage_path": "sources/test-uid/2026-01-01/img.png",
+        "converted_storage_path": None,
+    }
+    cursor.__enter__.return_value = cursor
+    cursor.__exit__.return_value = None
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+    conn.__enter__.return_value = conn
+    conn.__exit__.return_value = None
+
+    with patch("app.services.storage.get_db", return_value=conn), \
+         patch("app.services.storage.delete_paths", side_effect=RuntimeError("storage unavailable")):
+        deleted = asyncio.run(delete_source("test-uid", "src-1"))
+
+    assert deleted is True
+    cursor.execute.assert_any_call("delete from sources where id = %s and user_id = %s", ("src-1", "test-uid"))
+
+
 class TestValidateFileContent:
     def test_valid_pdf(self):
         assert validate_file_content(b"%PDF-1.4", "application/pdf") is True
@@ -178,3 +200,14 @@ class TestValidateFileContent:
 
     def test_invalid_webp(self):
         assert validate_file_content(b"RIFF\x00\x00\x00\x00xxxx", "image/webp") is False
+
+
+def test_image_to_pdf_bytes_handles_transparent_png():
+    image = Image.new("RGBA", (4, 4), (255, 0, 0, 128))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    image.close()
+
+    payload = _image_to_pdf_bytes(buffer.getvalue())
+
+    assert payload.startswith(b"%PDF")

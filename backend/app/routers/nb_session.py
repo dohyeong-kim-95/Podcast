@@ -262,6 +262,9 @@ async def start_auth(
         session = await create_browserless_session()
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to initialize Browserless auth session for user %s", uid)
+        raise HTTPException(status_code=502, detail=f"Browserless session init failed: {exc}") from exc
 
     started_at = datetime.now(timezone.utc)
     _write_auth_session(

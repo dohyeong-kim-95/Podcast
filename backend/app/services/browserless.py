@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import asyncio
+import json
 import os
 import uuid
 from dataclasses import dataclass
 from urllib.parse import urlparse, urlunparse
 
 import httpx
+import websockets
 
 
 DEFAULT_NB_AUTH_URL = "https://notebooklm.google.com"
 DEFAULT_NB_AUTH_TIMEOUT_SECONDS = 300
-DEFAULT_BROWSERLESS_GRAPHQL_URL = "https://api.browserless.io/graphql"
-DEFAULT_BROWSERLESS_SESSION_POLL_ATTEMPTS = 10
-DEFAULT_BROWSERLESS_SESSION_POLL_DELAY_SECONDS = 0.5
+DEFAULT_BROWSERLESS_QUALITY = 50
 
 
 @dataclass(frozen=True)
@@ -76,38 +75,69 @@ def _append_token(url: str, token: str, *, origin: str) -> str:
     return f"{raw}{separator}token={token}"
 
 
-async def _fetch_viewer_url(session_id: str, token: str, *, origin: str) -> str:
-    payload = {
-        "query": """
-            query getSessions($id: String!, $apiToken: String!) {
-                sessions(apiToken: $apiToken, id: $id) {
-                    devtoolsFrontendUrl
-                }
-            }
-        """,
-        "variables": {
-            "id": session_id,
-            "apiToken": token,
-        },
-    }
+class _CdpConnection:
+    def __init__(self, websocket):
+        self.websocket = websocket
+        self._next_id = 1
 
-    timeout = httpx.Timeout(20.0)
-    attempts = max(1, int(os.getenv("BROWSERLESS_SESSION_POLL_ATTEMPTS", str(DEFAULT_BROWSERLESS_SESSION_POLL_ATTEMPTS))))
-    delay_seconds = float(os.getenv("BROWSERLESS_SESSION_POLL_DELAY_SECONDS", str(DEFAULT_BROWSERLESS_SESSION_POLL_DELAY_SECONDS)))
+    async def send(self, method: str, params: dict | None = None, *, session_id: str | None = None) -> dict:
+        call_id = self._next_id
+        self._next_id += 1
+        payload: dict[str, object] = {
+            "id": call_id,
+            "method": method,
+        }
+        if params:
+            payload["params"] = params
+        if session_id:
+            payload["sessionId"] = session_id
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        for attempt in range(attempts):
-            response = await client.post(DEFAULT_BROWSERLESS_GRAPHQL_URL, json=payload)
-            response.raise_for_status()
-            sessions = response.json().get("data", {}).get("sessions", [])
-            if sessions:
-                viewer_url = sessions[0].get("devtoolsFrontendUrl", "")
-                if viewer_url:
-                    return _append_token(viewer_url, token, origin=origin)
-            if attempt + 1 < attempts:
-                await asyncio.sleep(delay_seconds)
+        await self.websocket.send(json.dumps(payload))
 
-    raise RuntimeError("Failed to retrieve Browserless debugger URL")
+        while True:
+            raw = await self.websocket.recv()
+            message = json.loads(raw)
+            if message.get("id") != call_id:
+                continue
+            if "error" in message:
+                details = message["error"]
+                raise RuntimeError(f"{method} failed: {details}")
+            return message.get("result", {})
+
+
+async def _create_live_url(connect_url: str, target_url: str, timeout_seconds: int) -> str:
+    async with websockets.connect(connect_url, open_timeout=20) as websocket:
+        cdp = _CdpConnection(websocket)
+        targets = await cdp.send("Target.getTargets")
+        page_targets = [
+            target for target in targets.get("targetInfos", [])
+            if target.get("type") == "page"
+        ]
+
+        if page_targets:
+            target_id = page_targets[0]["targetId"]
+        else:
+            created = await cdp.send("Target.createTarget", {"url": target_url})
+            target_id = created["targetId"]
+
+        attached = await cdp.send("Target.attachToTarget", {"targetId": target_id, "flatten": True})
+        session_id = attached["sessionId"]
+
+        await cdp.send("Page.enable", session_id=session_id)
+        await cdp.send("Page.navigate", {"url": target_url}, session_id=session_id)
+        response = await cdp.send(
+            "Browserless.liveURL",
+            {
+                "showBrowserInterface": True,
+                "quality": int(os.getenv("BROWSERLESS_LIVE_QUALITY", str(DEFAULT_BROWSERLESS_QUALITY))),
+                "timeout": timeout_seconds * 1000,
+            },
+            session_id=session_id,
+        )
+        live_url = response.get("liveURL", "")
+        if not live_url:
+            raise RuntimeError("Browserless.liveURL returned no URL")
+        return live_url
 
 
 async def create_browserless_session(session_id: str | None = None) -> BrowserlessSession:
@@ -121,8 +151,10 @@ async def create_browserless_session(session_id: str | None = None) -> Browserle
 
     payload = {
         "ttl": timeout_seconds * 1000,
+        "processKeepAlive": timeout_seconds * 1000,
         "stealth": True,
         "headless": False,
+        "url": target_url,
         "args": [
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -135,11 +167,12 @@ async def create_browserless_session(session_id: str | None = None) -> Browserle
         data = response.json()
 
     session_id = data["id"]
-    viewer_url = await _fetch_viewer_url(session_id, token, origin=origin)
+    connect_url = _append_token(data["connect"], token, origin=origin)
+    viewer_url = await _create_live_url(connect_url, target_url, timeout_seconds)
 
     return BrowserlessSession(
         session_id=session_id,
-        connect_url=data["connect"],
+        connect_url=connect_url,
         viewer_url=viewer_url,
         target_url=target_url,
         timeout_seconds=timeout_seconds,

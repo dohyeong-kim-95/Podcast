@@ -18,6 +18,7 @@ out/
 .env.*
 .env.local
 .env.*.local
+.envrc
 !backend/.env.example
 !frontend/.env.example
 !reauth_host/.env.example
@@ -38,3 +39,14 @@ Thumbs.db
 
 # Service account keys
 *service-account*.json
+
+# Local secrets
+secret
+secret/
+secrets
+secrets/
+*.secret
+*.secrets
+*.pem
+*.p12
+*.pfx

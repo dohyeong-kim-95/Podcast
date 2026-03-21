@@ -146,6 +146,8 @@ function MainContent() {
           <CompletedState podcast={podcast} />
         ) : podcast && ["generating", "pending", "retry_1", "retry_2"].includes(podcast.status) ? (
           <GeneratingState podcast={podcast} />
+        ) : hasTodaySources ? (
+          <ReadyToGenerateState sources={todaySources} podcastStatus={podcast?.status} />
         ) : podcast?.status === "failed" ? (
           <FailedState />
         ) : podcast?.status === "no_sources" ? (
@@ -153,8 +155,6 @@ function MainContent() {
         ) : (
           <EmptyState />
         )}
-
-        <SourceSyncCard sources={todaySources} />
 
         <Link
           href="/upload"
@@ -354,19 +354,30 @@ function EmptyState() {
   );
 }
 
-function SourceSyncCard({ sources }: { sources: Source[] }) {
+function ReadyToGenerateState({
+  sources,
+  podcastStatus,
+}: {
+  sources: Source[];
+  podcastStatus?: string;
+}) {
   const summary = summarizeSources(sources);
+  const helper =
+    podcastStatus === "failed"
+      ? "이전 생성은 실패했지만, 현재 업로드된 소스로 다시 시도할 수 있습니다."
+      : podcastStatus === "no_sources"
+        ? "이전 생성 시점에는 소스가 없었지만, 지금은 다시 시도할 수 있습니다."
+        : "즉시 생성 버튼을 누르면 현재 업로드된 소스로 바로 테스트할 수 있습니다.";
 
   return (
-    <div className="rounded-2xl border border-[#242424] bg-[#171717] px-4 py-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold text-white">오늘 생성 소스</p>
-          <p className="mt-1 text-xs text-[#8d8d8d]">
-            {summary.description}
-          </p>
+    <div className="rounded-xl border border-[#2a332d] bg-[#181d19] px-5 py-5">
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-1">
+          <p className="text-sm font-semibold text-white">오늘 생성에 포함될 소스</p>
+          <p className="text-sm leading-6 text-[#d9d9d9]">{summary.description}</p>
+          <p className="text-xs text-[#8d8d8d]">{helper}</p>
         </div>
-        <span className="rounded-full border border-white/10 px-3 py-1 text-xs font-semibold text-[#d7d7d7]">
+        <span className="rounded-full border border-[#1DB954]/20 bg-[#132117] px-3 py-1 text-xs font-semibold text-[#86dba2]">
           {sources.length}개
         </span>
       </div>

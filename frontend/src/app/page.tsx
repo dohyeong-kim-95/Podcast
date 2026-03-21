@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import AudioPlayer from "@/components/AudioPlayer";
@@ -34,6 +34,7 @@ function MainContent() {
   const [loading, setLoading] = useState(true);
   const [triggeringGenerate, setTriggeringGenerate] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const lastDebugSignatureRef = useRef<string>("");
 
   const fetchPodcast = useCallback(async () => {
     try {
@@ -57,6 +58,61 @@ function MainContent() {
     fetchPodcast();
   }, [fetchPodcast]);
 
+  useEffect(() => {
+    const signature = JSON.stringify({
+      loading,
+      podcastStatus: podcast?.status ?? null,
+      podcastId: podcast?.podcastId ?? null,
+      requestedAt: podcast?.requestedAt ?? null,
+      generatedAt: podcast?.generatedAt ?? null,
+      sourceCount: podcast?.sourceCount ?? null,
+      todaySourceCount: todaySources.length,
+      nbSessionStatus: nbSession?.status ?? null,
+      error,
+      triggeringGenerate,
+    });
+
+    if (signature === lastDebugSignatureRef.current) {
+      return;
+    }
+
+    lastDebugSignatureRef.current = signature;
+    console.log("[podcast-debug][change]", {
+      at: new Date().toISOString(),
+      loading,
+      podcastStatus: podcast?.status ?? null,
+      podcastId: podcast?.podcastId ?? null,
+      requestedAt: podcast?.requestedAt ?? null,
+      generatedAt: podcast?.generatedAt ?? null,
+      sourceCount: podcast?.sourceCount ?? null,
+      todaySourceCount: todaySources.length,
+      todaySourceSummary: summarizeSources(todaySources).description,
+      nbSessionStatus: nbSession?.status ?? null,
+      error,
+      triggeringGenerate,
+    });
+  }, [loading, podcast, todaySources, nbSession, error, triggeringGenerate]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      console.log("[podcast-debug][tick]", {
+        at: new Date().toISOString(),
+        podcastStatus: podcast?.status ?? null,
+        podcastId: podcast?.podcastId ?? null,
+        requestedAt: podcast?.requestedAt ?? null,
+        generatedAt: podcast?.generatedAt ?? null,
+        sourceCount: podcast?.sourceCount ?? null,
+        todaySourceCount: todaySources.length,
+        todaySourceSummary: summarizeSources(todaySources).description,
+        nbSessionStatus: nbSession?.status ?? null,
+        loading,
+        error,
+      });
+    }, 10000);
+
+    return () => window.clearInterval(interval);
+  }, [loading, podcast, todaySources, nbSession, error]);
+
   // Poll while generating
   useEffect(() => {
     if (!podcast) return;
@@ -70,6 +126,14 @@ function MainContent() {
   const handleGenerateNow = useCallback(async () => {
     setTriggeringGenerate(true);
     setError(null);
+    console.log("[podcast-debug][request]", {
+      at: new Date().toISOString(),
+      action: "triggerGenerate",
+      podcastStatusBefore: podcast?.status ?? null,
+      todaySourceCount: todaySources.length,
+      todaySourceSummary: summarizeSources(todaySources).description,
+      nbSessionStatus: nbSession?.status ?? null,
+    });
     try {
       await triggerGenerate();
       await fetchPodcast();
@@ -83,7 +147,7 @@ function MainContent() {
     } finally {
       setTriggeringGenerate(false);
     }
-  }, [fetchPodcast]);
+  }, [fetchPodcast, podcast, todaySources, nbSession]);
 
   const sessionReady = !nbSession || ["valid", "expiring_soon"].includes(nbSession.status);
   const canRetryToday = podcast?.status === "no_sources" || podcast?.status === "failed";

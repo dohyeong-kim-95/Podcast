@@ -86,7 +86,7 @@ def test_generate_with_no_allowed_users_returns_no_users():
 
 
 def test_generate_me_conflict_when_already_attempted_today():
-    db_row = {"status": "failed"}
+    db_row = {"status": "completed"}
     with _auth_patch(), patch(
         "app.routers.podcast.get_db",
         return_value=_db_context(row=db_row),
@@ -105,6 +105,16 @@ def test_generate_me_starts_background_generation():
     assert response.status_code == 200
     assert response.json()["status"] == "pending"
     assert response.json()["requestedAt"]
+
+
+def test_generate_me_allows_retry_after_no_sources():
+    with _auth_patch(), patch(
+        "app.routers.podcast.get_db",
+        return_value=_db_context(row={"status": "no_sources"}),
+    ):
+        response = client.post("/api/generate/me", headers={"Authorization": "Bearer token"})
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
 
 
 def test_get_today_podcast_none_for_missing_record():

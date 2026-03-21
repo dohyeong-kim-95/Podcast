@@ -261,6 +261,46 @@ async def _get_sources_for_window(uid: str, date_str: str) -> list[dict]:
     ]
 
 
+async def _get_manual_sources(uid: str, date_str: str) -> list[dict]:
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            select
+                id,
+                file_name,
+                original_type,
+                converted_type,
+                original_storage_path,
+                converted_storage_path,
+                uploaded_at,
+                window_date,
+                status
+            from sources
+            where user_id = %s
+              and window_date = %s::date
+              and status = any(%s)
+            order by uploaded_at asc
+            """,
+            (uid, date_str, ["uploaded", "processing", "ready"]),
+        )
+        rows = cur.fetchall()
+
+    return [
+        {
+            "sourceId": row["id"],
+            "fileName": row["file_name"],
+            "originalType": row["original_type"],
+            "convertedType": row["converted_type"],
+            "originalStoragePath": row["original_storage_path"],
+            "convertedStoragePath": row["converted_storage_path"],
+            "uploadedAt": row["uploaded_at"],
+            "windowDate": serialize_date(row["window_date"]),
+            "status": row["status"],
+        }
+        for row in rows
+    ]
+
+
 async def _download_source_pdf(source: dict) -> str | None:
     storage_path = source.get("convertedStoragePath") or source.get("originalStoragePath")
     if not storage_path:
@@ -305,7 +345,7 @@ def _notify_user(uid: str, *, title: str, body: str, link: str = "/") -> None:
         logger.warning("Push notification failed for user %s: %s", uid, exc)
 
 
-async def _generate_for_user(uid: str, date_str: str) -> dict:
+async def _generate_for_user(uid: str, date_str: str, source_mode: str = "scheduled") -> dict:
     podcast_id = _podcast_id(uid, date_str)
     requested_at = utc_now()
 
@@ -327,7 +367,11 @@ async def _generate_for_user(uid: str, date_str: str) -> dict:
         downloaded=False,
     )
 
-    sources = await _get_sources_for_window(uid, date_str)
+    sources = (
+        await _get_manual_sources(uid, date_str)
+        if source_mode == "manual"
+        else await _get_sources_for_window(uid, date_str)
+    )
     if not sources:
         await _update_podcast_status(
             podcast_id,
@@ -342,7 +386,11 @@ async def _generate_for_user(uid: str, date_str: str) -> dict:
         _notify_user(
             uid,
             title="오늘은 소스가 없어요",
-            body="내일 아침 팟캐스트를 위해 오늘 소스를 업로드해 보세요.",
+            body=(
+                "오늘 즉시 생성에 사용할 수 있는 소스가 없습니다. 업로드 후 다시 시도해 보세요."
+                if source_mode == "manual"
+                else "내일 아침 팟캐스트를 위해 오늘 소스를 업로드해 보세요."
+            ),
         )
         return {"uid": uid, "skipped": True, "reason": "no_sources"}
 
@@ -497,7 +545,7 @@ async def generate_all(
 
     async def _run_generation(uid: str):
         async with semaphore:
-            return await _generate_for_user(uid, date_str)
+            return await _generate_for_user(uid, date_str, "scheduled")
 
     tasks = [_run_generation(user["uid"]) for user in users]
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -534,21 +582,41 @@ async def generate_me(
             (podcast_id,),
         )
         row = cur.fetchone()
-        if row:
+        if row and row["status"] not in {"failed", "no_sources"}:
             raise HTTPException(
                 status_code=409,
                 detail="Immediate podcast generation is limited to once per day",
             )
 
-        cur.execute(
-            """
-            insert into podcasts (id, user_id, date, status, requested_at, source_ids, source_count, downloaded)
-            values (%s, %s, %s::date, %s, %s, %s::jsonb, %s, %s)
-            """,
-            (podcast_id, uid, date_str, "pending", requested_at, json_dumps([]), 0, False),
-        )
+        if row:
+            cur.execute(
+                """
+                update podcasts
+                set status = %s,
+                    requested_at = %s,
+                    source_ids = %s::jsonb,
+                    source_count = %s,
+                    audio_path = %s,
+                    duration_seconds = %s,
+                    generated_at = %s,
+                    instructions_used = %s,
+                    error = %s,
+                    feedback = %s,
+                    downloaded = %s
+                where id = %s
+                """,
+                ("pending", requested_at, json_dumps([]), 0, None, None, None, None, None, None, False, podcast_id),
+            )
+        else:
+            cur.execute(
+                """
+                insert into podcasts (id, user_id, date, status, requested_at, source_ids, source_count, downloaded)
+                values (%s, %s, %s::date, %s, %s, %s::jsonb, %s, %s)
+                """,
+                (podcast_id, uid, date_str, "pending", requested_at, json_dumps([]), 0, False),
+            )
 
-    background_tasks.add_task(_generate_for_user, uid, date_str)
+    background_tasks.add_task(_generate_for_user, uid, date_str, "manual")
     return {
         "status": "pending",
         "date": date_str,

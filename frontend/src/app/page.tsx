@@ -81,13 +81,21 @@ function MainContent() {
   }, [fetchPodcast]);
 
   const sessionReady = !nbSession || ["valid", "expiring_soon"].includes(nbSession.status);
-  const generateRemainingToday = podcast ? 0 : 1;
-  const generateDisabled = loading || triggeringGenerate || !!podcast || !sessionReady;
+  const canRetryToday = podcast?.status === "no_sources" || podcast?.status === "failed";
+  const generationActive = !!podcast && ["generating", "pending", "retry_1", "retry_2"].includes(podcast.status);
+  const generateRemainingToday = podcast && !canRetryToday ? 0 : 1;
+  const generateDisabled = loading || triggeringGenerate || generationActive || (!canRetryToday && !!podcast) || !sessionReady;
   const generateHint = !sessionReady
     ? "NotebookLM 재인증 후 사용할 수 있습니다"
-    : podcast
-      ? "오늘 사용이 끝났습니다"
-      : "오늘 한 번만 바로 생성할 수 있습니다";
+    : generationActive
+      ? "지금 생성이 진행 중입니다"
+      : podcast?.status === "completed"
+        ? "오늘 사용이 끝났습니다"
+        : podcast?.status === "no_sources"
+          ? "지금 올린 소스로 다시 시도할 수 있습니다"
+          : podcast?.status === "failed"
+            ? "오류를 확인한 뒤 다시 시도할 수 있습니다"
+            : "오늘 한 번만 바로 생성할 수 있습니다";
 
   return (
     <div className="min-h-screen bg-[#121212] text-white">
@@ -290,7 +298,7 @@ function FailedState() {
       </div>
       <p className="text-white text-sm font-medium">팟캐스트 생성에 실패했습니다</p>
       <p className="text-[#535353] text-xs mt-1">
-        즉시 생성은 하루 1회만 가능합니다. 세션과 소스를 확인한 뒤 내일 다시 시도해 주세요.
+        세션이나 생성 과정에서 오류가 발생했습니다. 설정과 소스를 확인한 뒤 다시 시도해 보세요.
       </p>
     </div>
   );
@@ -304,9 +312,9 @@ function NoSourcesState() {
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
         </svg>
       </div>
-      <p className="text-white text-sm font-medium">업로드된 소스가 없습니다</p>
+      <p className="text-white text-sm font-medium">오늘 생성에 포함된 소스가 없습니다</p>
       <p className="text-[#535353] text-xs mt-1">
-        소스를 업로드하면 다음 날 아침 팟캐스트가 생성됩니다
+        생성 시점에 사용할 수 있는 소스가 없었습니다. 지금 파일을 올렸다면 즉시 생성 버튼으로 다시 시도할 수 있습니다.
       </p>
     </div>
   );

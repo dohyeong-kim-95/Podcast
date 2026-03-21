@@ -522,32 +522,19 @@ async def generate_me(
             (podcast_id,),
         )
         row = cur.fetchone()
-        if row and row.get("status") in ("generating", "completed", "no_sources"):
+        if row:
             raise HTTPException(
                 status_code=409,
-                detail=f"Podcast already {row['status']} for today",
+                detail="Immediate podcast generation is limited to once per day",
             )
 
-        if row:
-            cur.execute(
-                """
-                update podcasts
-                set status = %s,
-                    user_id = %s,
-                    date = %s::date,
-                    error = null
-                where id = %s
-                """,
-                ("generating", uid, date_str, podcast_id),
-            )
-        else:
-            cur.execute(
-                """
-                insert into podcasts (id, user_id, date, status, source_ids, source_count, downloaded)
-                values (%s, %s, %s::date, %s, %s::jsonb, %s, %s)
-                """,
-                (podcast_id, uid, date_str, "generating", json_dumps([]), 0, False),
-            )
+        cur.execute(
+            """
+            insert into podcasts (id, user_id, date, status, source_ids, source_count, downloaded)
+            values (%s, %s, %s::date, %s, %s::jsonb, %s, %s)
+            """,
+            (podcast_id, uid, date_str, "generating", json_dumps([]), 0, False),
+        )
 
     background_tasks.add_task(_generate_for_user, uid, date_str)
     return {"status": "generating", "date": date_str, "podcastId": podcast_id}

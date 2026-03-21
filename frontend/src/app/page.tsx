@@ -29,7 +29,7 @@ function MainContent() {
   const [podcast, setPodcast] = useState<Podcast | null>(null);
   const [nbSession, setNbSession] = useState<NbSessionStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [retrying, setRetrying] = useState(false);
+  const [triggeringGenerate, setTriggeringGenerate] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const fetchPodcast = useCallback(async () => {
@@ -62,23 +62,32 @@ function MainContent() {
     return () => clearInterval(interval);
   }, [podcast, fetchPodcast]);
 
-  const handleRetry = useCallback(async () => {
-    setRetrying(true);
+  const handleGenerateNow = useCallback(async () => {
+    setTriggeringGenerate(true);
     setError(null);
     try {
       await triggerGenerate();
       await fetchPodcast();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "재생성에 실패했습니다";
-      if (msg.includes("409")) {
-        setError("이미 생성 중입니다");
+      const msg = e instanceof Error ? e.message : "즉시 생성에 실패했습니다";
+      if (msg.includes("once per day") || msg.includes("409")) {
+        setError("즉시 생성은 하루에 한 번만 사용할 수 있습니다");
       } else {
         setError(msg);
       }
     } finally {
-      setRetrying(false);
+      setTriggeringGenerate(false);
     }
   }, [fetchPodcast]);
+
+  const sessionReady = !nbSession || ["valid", "expiring_soon"].includes(nbSession.status);
+  const generateRemainingToday = podcast ? 0 : 1;
+  const generateDisabled = loading || triggeringGenerate || !!podcast || !sessionReady;
+  const generateHint = !sessionReady
+    ? "NotebookLM 재인증 후 사용할 수 있습니다"
+    : podcast
+      ? "오늘 사용이 끝났습니다"
+      : "오늘 한 번만 바로 생성할 수 있습니다";
 
   return (
     <div className="min-h-screen bg-[#121212] text-white">
@@ -116,7 +125,7 @@ function MainContent() {
         ) : podcast && ["generating", "pending", "retry_1", "retry_2"].includes(podcast.status) ? (
           <GeneratingState />
         ) : podcast?.status === "failed" ? (
-          <FailedState onRetry={handleRetry} retrying={retrying} />
+          <FailedState />
         ) : podcast?.status === "no_sources" ? (
           <NoSourcesState />
         ) : (
@@ -133,27 +142,61 @@ function MainContent() {
           소스 업로드
         </Link>
 
-        <Link
-          href="/memory"
-          className="flex items-center justify-center gap-2 w-full bg-[#181818] border border-[#282828] text-white font-semibold py-3 rounded-full hover:border-[#1DB954] transition-colors"
+        <button
+          type="button"
+          onClick={handleGenerateNow}
+          disabled={generateDisabled}
+          className={`w-full rounded-2xl border px-4 py-3 text-left transition-colors ${
+            generateDisabled
+              ? "border-[#282828] bg-[#181818] text-[#6f6f6f]"
+              : "border-[#1DB954]/40 bg-[#16231b] text-white hover:border-[#1DB954] hover:bg-[#1a2b20]"
+          }`}
         >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.75a2.25 2.25 0 100 4.5 2.25 2.25 0 000-4.5z" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6.94 4.94l1.06 1.06m8 8 1.06 1.06M4.94 17.06 6 16m12-8 1.06-1.06M12 2.25v1.5m0 16.5v1.5M2.25 12h1.5m16.5 0h1.5" />
-          </svg>
-          메모리 설정
-        </Link>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10">
+                {triggeringGenerate ? (
+                  <div className="h-5 w-5 rounded-full border-2 border-current border-t-transparent animate-spin" />
+                ) : (
+                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 3 4 14h6l-1 7 9-11h-6l1-7z" />
+                  </svg>
+                )}
+              </div>
+              <div>
+                <p className="font-semibold">즉시 팟캐스트 생성</p>
+                <p className="text-xs opacity-70">{generateHint}</p>
+              </div>
+            </div>
+            <span className="rounded-full border border-current/20 px-3 py-1 text-xs font-semibold">
+              {generateRemainingToday}/1
+            </span>
+          </div>
+        </button>
 
-        <Link
-          href="/settings"
-          className="flex items-center justify-center gap-2 w-full bg-[#181818] border border-[#282828] text-white font-semibold py-3 rounded-full hover:border-[#1DB954] transition-colors"
-        >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317a1 1 0 011.35-.936l.094.04 1.304.652a1 1 0 00.894 0l1.304-.652a1 1 0 011.444.894v1.46a1 1 0 00.293.707l1.033 1.033a1 1 0 010 1.414l-1.033 1.033a1 1 0 00-.293.707v1.46a1 1 0 01-1.444.894l-1.304-.652a1 1 0 00-.894 0l-1.304.652a1 1 0 01-1.444-.894v-1.46a1 1 0 00-.293-.707L5.34 9.581a1 1 0 010-1.414l1.033-1.033a1 1 0 00.293-.707v-1.46a1 1 0 011.444-.894l1.304.652a1 1 0 00.894 0l.017-.008z" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 11.25A2.25 2.25 0 1012 6.75a2.25 2.25 0 000 4.5z" />
-          </svg>
-          설정
-        </Link>
+        <div className="grid grid-cols-2 gap-3">
+          <Link
+            href="/memory"
+            className="flex items-center justify-center gap-2 bg-[#181818] border border-[#282828] text-white font-semibold py-3 rounded-full hover:border-[#1DB954] transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.75a2.25 2.25 0 100 4.5 2.25 2.25 0 000-4.5z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6.94 4.94l1.06 1.06m8 8 1.06 1.06M4.94 17.06 6 16m12-8 1.06-1.06M12 2.25v1.5m0 16.5v1.5M2.25 12h1.5m16.5 0h1.5" />
+            </svg>
+            메모리 설정
+          </Link>
+
+          <Link
+            href="/settings"
+            className="flex items-center justify-center gap-2 bg-[#181818] border border-[#282828] text-white font-semibold py-3 rounded-full hover:border-[#1DB954] transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317a1 1 0 011.35-.936l.094.04 1.304.652a1 1 0 00.894 0l1.304-.652a1 1 0 011.444.894v1.46a1 1 0 00.293.707l1.033 1.033a1 1 0 010 1.414l-1.033 1.033a1 1 0 00-.293.707v1.46a1 1 0 01-1.444.894l-1.304-.652a1 1 0 00-.894 0l-1.304.652a1 1 0 01-1.444-.894v-1.46a1 1 0 00-.293-.707L5.34 9.581a1 1 0 010-1.414l1.033-1.033a1 1 0 00.293-.707v-1.46a1 1 0 011.444-.894l1.304.652a1 1 0 00.894 0l.017-.008z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 11.25A2.25 2.25 0 1012 6.75a2.25 2.25 0 000 4.5z" />
+            </svg>
+            설정
+          </Link>
+        </div>
       </main>
     </div>
   );
@@ -213,7 +256,7 @@ function GeneratingState() {
   );
 }
 
-function FailedState({ onRetry, retrying }: { onRetry: () => void; retrying: boolean }) {
+function FailedState() {
   return (
     <div className="bg-[#181818] rounded-xl p-6 text-center">
       <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-[#282828] flex items-center justify-center">
@@ -222,23 +265,9 @@ function FailedState({ onRetry, retrying }: { onRetry: () => void; retrying: boo
         </svg>
       </div>
       <p className="text-white text-sm font-medium">팟캐스트 생성에 실패했습니다</p>
-      <p className="text-[#535353] text-xs mt-1 mb-4">
-        다시 시도해주세요
+      <p className="text-[#535353] text-xs mt-1">
+        즉시 생성은 하루 1회만 가능합니다. 세션과 소스를 확인한 뒤 내일 다시 시도해 주세요.
       </p>
-      <button
-        onClick={onRetry}
-        disabled={retrying}
-        className="px-6 py-2.5 bg-[#1DB954] text-black font-semibold rounded-full hover:bg-[#1ed760] transition-colors disabled:opacity-50"
-      >
-        {retrying ? (
-          <span className="flex items-center gap-2">
-            <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
-            생성 중...
-          </span>
-        ) : (
-          "다시 생성"
-        )}
-      </button>
     </div>
   );
 }

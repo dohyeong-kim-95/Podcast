@@ -85,15 +85,15 @@ def test_generate_with_no_allowed_users_returns_no_users():
     assert response.json()["status"] == "no_users"
 
 
-def test_generate_me_conflict_when_already_generating():
-    today = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
-    db_row = {"status": "generating"}
+def test_generate_me_conflict_when_already_attempted_today():
+    db_row = {"status": "failed"}
     with _auth_patch(), patch(
         "app.routers.podcast.get_db",
         return_value=_db_context(row=db_row),
     ):
         response = client.post("/api/generate/me", headers={"Authorization": "Bearer token"})
     assert response.status_code == 409
+    assert response.json()["detail"] == "Immediate podcast generation is limited to once per day"
 
 
 def test_generate_me_starts_background_generation():

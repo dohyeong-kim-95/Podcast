@@ -19,7 +19,7 @@
 | 데이터 | Supabase Postgres |
 | 파일 저장 | Supabase Storage |
 | 푸시 | 표준 Web Push (VAPID) |
-| NotebookLM 재인증 | Browserless 새 탭 플로우 |
+| NotebookLM 재인증 | self-hosted remote browser on miniPC |
 | 스케줄링 | Cloud Scheduler |
 
 ## 핵심 흐름
@@ -34,6 +34,7 @@
 ```text
 backend/   FastAPI API, generation pipeline, Supabase/Postgres integration
 frontend/  Next.js app, PWA, Supabase Auth client
+reauth_host/ MiniPC-hosted remote browser service for mobile NotebookLM reauth
 docs/      PRD, TRD, tasks, deployment notes
 supabase/  SQL migration assets
 .codex/    project agents
@@ -67,7 +68,8 @@ npm run dev
 프로덕션에서 중요한 값은 아래입니다.
 
 - 프론트엔드: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY`, `NEXT_PUBLIC_API_BASE_URL`
-- 백엔드: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DB_URL`, `CORS_ORIGINS`, `ALLOWED_EMAILS`, `CLOUD_RUN_URL`, `SCHEDULER_SERVICE_ACCOUNT`, `NB_COOKIE_ENCRYPTION_KEY`, `BROWSERLESS_TOKEN`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`
+- 백엔드: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DB_URL`, `CORS_ORIGINS`, `ALLOWED_EMAILS`, `CLOUD_RUN_URL`, `SCHEDULER_SERVICE_ACCOUNT`, `NB_COOKIE_ENCRYPTION_KEY`, `REAUTH_HOST_BASE_URL`, `REAUTH_HOST_API_KEY`, `REAUTH_CALLBACK_TOKEN`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`
+- 미니PC reauth host: [reauth_host/.env.example](/home/kimdohyeong/Working_kdh/1_Projects/002_notebooklm_py/Podcast/reauth_host/.env.example)
 
 ## 배포 원칙
 
@@ -84,6 +86,14 @@ npm run dev
 - Supabase Postgres와 Supabase Storage를 사용합니다
 - 프로덕션 origin에 맞춰 `CORS_ORIGINS=https://podcast.bubblelab.dev`를 설정해야 합니다
 - Scheduler 호출용 `CLOUD_RUN_URL`, `SCHEDULER_SERVICE_ACCOUNT`가 필요합니다
+- NotebookLM 재인증용 miniPC host를 `reauth.bubblelab.dev` 같은 별도 서브도메인으로 노출해야 합니다
+
+### MiniPC Reauth Host
+
+- `reauth_host/`를 항상 켜져 있는 miniPC에 배포합니다
+- public hostname은 `reauth.bubblelab.dev`처럼 별도 origin을 사용합니다
+- Vercel DNS에서 `reauth` 레코드를 miniPC 공인 IP로 연결하고, 공유기에서 `80/443` 포트포워딩을 해야 합니다
+- setup guide: [MiniPC Reauth Host](/home/kimdohyeong/Working_kdh/1_Projects/002_notebooklm_py/Podcast/docs/mini-pc-reauth.md)
 
 ## 검증
 
@@ -108,3 +118,4 @@ API_URL=https://your-cloud-run-service.run.app \
 - [TRD](/home/kimdohyeong/Working_kdh/1_Projects/002_notebooklm_py/Podcast/docs/trd.md)
 - [Launch Tasks](/home/kimdohyeong/Working_kdh/1_Projects/002_notebooklm_py/Podcast/docs/tasks.md)
 - [Launch Checklist](/home/kimdohyeong/Working_kdh/1_Projects/002_notebooklm_py/Podcast/docs/launch-checklist.md)
+- [MiniPC Reauth Host](/home/kimdohyeong/Working_kdh/1_Projects/002_notebooklm_py/Podcast/docs/mini-pc-reauth.md)

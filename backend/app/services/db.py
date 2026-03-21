@@ -6,9 +6,6 @@ from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from typing import Any, Iterator
 
-import psycopg
-from psycopg.rows import dict_row
-
 
 def _db_url() -> str:
     value = os.getenv("SUPABASE_DB_URL", "").strip()
@@ -26,7 +23,13 @@ def _db_connect_timeout_seconds() -> int:
 
 
 @contextmanager
-def get_db() -> Iterator[psycopg.Connection]:
+def get_db() -> Iterator[Any]:
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+    except ModuleNotFoundError as exc:  # pragma: no cover - depends on local runtime packaging
+        raise RuntimeError("psycopg is not installed") from exc
+
     conn = psycopg.connect(
         _db_url(),
         row_factory=dict_row,

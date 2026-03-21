@@ -1,0 +1,31 @@
+services:
+  reauth-host:
+    build:
+      context: .
+    env_file:
+      - .env
+    expose:
+      - "8091"
+    shm_size: "1gb"
+    restart: unless-stopped
+    volumes:
+      - ./runtime:/tmp/reauth-host
+
+  caddy:
+    image: caddy:2
+    env_file:
+      - .env
+    depends_on:
+      - reauth-host
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

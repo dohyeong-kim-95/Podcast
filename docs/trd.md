@@ -1,4 +1,4 @@
-# Podcast — TRD (Supabase + Cloud Run + Vercel)
+# Podcast — TRD (Supabase + Cloud Run + Vercel + MiniPC Reauth Host)
 
 ## 1. 목표
 
@@ -29,7 +29,7 @@ Cloud Run (FastAPI)
         ├─ Supabase Auth
         ├─ Supabase Postgres
         ├─ Supabase Storage
-        ├─ Browserless
+        ├─ MiniPC reauth host (reauth.bubblelab.dev)
         ├─ notebooklm-py
         └─ Web Push (VAPID)
 
@@ -141,10 +141,11 @@ SQL migration 기준 파일: [supabase/migrations/20260320_init.sql](/home/kimdo
 
 ### NotebookLM 재인증
 
-1. 백엔드가 Browserless 세션을 만든다.
-2. `nb_auth_sessions`에 `pending/running` 상태를 저장한다.
-3. 사용자가 새 탭에서 NotebookLM 로그인을 완료한다.
-4. 서버가 `storage_state`를 암호화해 `nb_sessions`에 저장한다.
+1. 백엔드가 miniPC reauth host에 새 세션 생성을 요청한다.
+2. `nb_auth_sessions`에 `pending` 상태와 `viewer_url`을 저장한다.
+3. 사용자가 휴대폰에서 `viewer_url`을 열고 원격 Chromium 안에서 NotebookLM 로그인을 완료한다.
+4. miniPC reauth host가 `storage_state`를 백엔드 콜백으로 전달한다.
+5. 백엔드가 `storage_state`를 암호화해 `nb_sessions`에 저장한다.
 
 ## 7. 환경변수
 
@@ -171,13 +172,13 @@ SQL migration 기준 파일: [supabase/migrations/20260320_init.sql](/home/kimdo
 - `CLOUD_RUN_URL`
 - `SCHEDULER_SERVICE_ACCOUNT`
 - `NB_COOKIE_ENCRYPTION_KEY`
-- `BROWSERLESS_TOKEN`
-- `BROWSERLESS_CONNECT_URL_TEMPLATE`
-- `BROWSERLESS_VIEWER_URL_TEMPLATE`
+- `REAUTH_HOST_BASE_URL`
+- `REAUTH_HOST_API_KEY`
+- `REAUTH_CALLBACK_TOKEN`
 
 ## 8. 남은 운영 리스크
 
 - Supabase OAuth provider 설정과 redirect URL 오설정
 - Supabase Storage bucket/policy 미구성
 - VAPID key pair 미설정
-- Browserless와 NotebookLM 외부 변화
+- miniPC reauth host 가용성과 NotebookLM 외부 변화

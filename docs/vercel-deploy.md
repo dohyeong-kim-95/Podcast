@@ -62,4 +62,4 @@ API_URL=https://<cloud-run-service>.run.app \
 - Supabase Google 로그인 성공
 - `/auth/callback`에서 세션 확정
 - `/settings`에서 알림 권한 요청 성공
-- 업로드/재생/재인증 동작 확인
+- 업로드/재생/self-hosted remote-browser 재인증 동작 확인

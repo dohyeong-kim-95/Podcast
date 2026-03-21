@@ -15,8 +15,12 @@ out/
 
 # Environment
 .env
+.env.*
 .env.local
 .env.*.local
+!backend/.env.example
+!frontend/.env.example
+!reauth_host/.env.example
 
 # Firebase
 .firebase/

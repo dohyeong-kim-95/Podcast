@@ -30,7 +30,7 @@
 3. 스케줄러가 백엔드를 호출해 사용자별 팟캐스트 생성을 시작한다.
 4. 생성이 끝나면 웹 푸시 알림이 도착한다.
 5. 사용자는 앱에서 바로 재생하거나 다운로드한다.
-6. NotebookLM 세션이 만료되면 설정 화면에서 새 탭 재인증을 수행한다.
+6. NotebookLM 세션이 만료되면 설정 화면에서 self-hosted remote browser 재인증을 수행한다.
 
 ## 5. 출시 목표
 
@@ -86,6 +86,6 @@
 
 - `notebooklm-py`는 비공식 라이브러리다
 - NotebookLM 인증은 쿠키 기반이므로 주기적 재인증이 필요하다
-- Browserless와 Web Push는 실제 배포 도메인/HTTPS에서만 최종 검증 가능하다
+- self-hosted remote browser와 Web Push는 실제 배포 도메인/HTTPS에서만 최종 검증 가능하다
 - Supabase Auth redirect URL, Google provider 설정, Web Push VAPID 키가 어긋나면 로그인/알림이 바로 깨진다
 - 로컬 자동 검증은 통과했지만 production 콘솔 설정과 실기기 검증이 남아 있다

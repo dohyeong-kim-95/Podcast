@@ -1,0 +1,4 @@
+{$REAUTH_PUBLIC_HOSTNAME} {
+    encode zstd gzip
+    reverse_proxy reauth-host:8091
+}

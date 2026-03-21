@@ -21,7 +21,7 @@ export default function StatusBanner({
   const config = authPending
     ? {
         title: "재인증 진행 중",
-        description: "열린 탭에서 NotebookLM 로그인을 완료하면 상태가 자동으로 갱신됩니다.",
+        description: "열린 원격 브라우저에서 NotebookLM 로그인을 완료하면 상태가 자동으로 갱신됩니다.",
         className: "bg-sky-950/30 border-sky-800/50 text-sky-200",
         linkLabel: "세션 상태 보기",
       }

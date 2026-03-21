@@ -2,11 +2,10 @@ import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.main import app
-from app.services.browserless import BrowserlessSession
-
-from app.routers import nb_session as nb_session_router
 from httpx import ASGITransport, AsyncClient
+
+from app.main import app
+from app.services.reauth_host import HostedReauthSession
 
 
 MOCK_USER = {
@@ -20,9 +19,13 @@ def _auth_patch():
     return patch("app.middleware.auth.verify_access_token", return_value=MOCK_USER)
 
 
-async def _request(method: str, path: str):
+async def _request(method: str, path: str, *, headers: dict[str, str] | None = None, json: dict | None = None):
+    request_headers = {"Authorization": "Bearer valid-token"}
+    if headers:
+        request_headers.update(headers)
+
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as api:
-        return await api.request(method, path, headers={"Authorization": "Bearer valid-token"})
+        return await api.request(method, path, headers=request_headers, json=json)
 
 
 def _empty_db_context(*, row):
@@ -42,6 +45,7 @@ def test_start_auth_reuses_running_session():
         "sessionId": "s1",
         "status": "running",
         "viewerUrl": "https://viewer.example",
+        "authFlow": "remote_vnc",
     }
     with _auth_patch(), patch("app.routers.nb_session._read_current_auth_session", return_value=current):
         response = asyncio.run(_request("POST", "/api/nb-session/start-auth"))
@@ -50,28 +54,31 @@ def test_start_auth_reuses_running_session():
     body = response.json()
     assert body["sessionId"] == "s1"
     assert body["status"] == "pending"
+    assert body["authFlow"] == "remote_vnc"
 
 
 def test_start_auth_starts_new_session():
-    session = BrowserlessSession(
+    session = HostedReauthSession(
         session_id="new-session",
-        connect_url="wss://connect",
-        viewer_url="https://viewer",
-        target_url="https://notebooklm.google.com",
-        timeout_seconds=300,
+        viewer_url="https://reauth.example/session/new-session",
+        status="pending",
+        auth_flow="remote_vnc",
     )
     with _auth_patch(), \
          patch("app.routers.nb_session._read_current_auth_session", return_value=None), \
-         patch("app.routers.nb_session.create_browserless_session", new=AsyncMock(return_value=session)), \
-         patch("app.routers.nb_session._write_auth_session"), \
-         patch("app.routers.nb_session._run_auth_flow", new=AsyncMock()):
+         patch("app.routers.nb_session.create_reauth_session", new=AsyncMock(return_value=session)), \
+         patch("app.routers.nb_session._callback_url", return_value="https://api.example/api/nb-session/internal/update"), \
+         patch("app.routers.nb_session._callback_token", return_value="callback-secret"), \
+         patch("app.routers.nb_session._write_auth_session") as mock_write:
         response = asyncio.run(_request("POST", "/api/nb-session/start-auth"))
 
     assert response.status_code == 200
     body = response.json()
     assert body["sessionId"] == "new-session"
-    assert body["viewerUrl"] == "https://viewer"
+    assert body["viewerUrl"] == "https://reauth.example/session/new-session"
     assert body["status"] == "pending"
+    assert body["authFlow"] == "remote_vnc"
+    assert mock_write.call_count == 1
 
 
 def test_poll_not_found():
@@ -87,7 +94,7 @@ def test_poll_running_normalizes_to_pending():
         "sessionId": "s1",
         "status": "running",
         "viewerUrl": "https://viewer",
-        "authFlow": "new_tab",
+        "authFlow": "remote_vnc",
         "error": None,
         "completedAt": None,
     }):
@@ -98,7 +105,7 @@ def test_poll_running_normalizes_to_pending():
 
 
 def test_status_without_auth_session():
-    row = {"auth_flow": "new_tab", "expires_at": None, "last_updated": None, "status": "missing"}
+    row = {"auth_flow": "remote_vnc", "expires_at": None, "last_updated": None, "status": "missing"}
     with _auth_patch(), \
          patch("app.routers.nb_session.get_db", return_value=_empty_db_context(row=row)), \
          patch("app.routers.nb_session._read_current_auth_session", return_value=None):
@@ -109,40 +116,63 @@ def test_status_without_auth_session():
     assert response.json()["authSession"] is None
 
 
-def test_run_auth_flow_marks_completed():
-    session = BrowserlessSession(
-        session_id="s1",
-        connect_url="wss://connect",
-        viewer_url="https://viewer",
-        target_url="https://notebooklm.google.com",
-        timeout_seconds=30,
-    )
-
-    with patch("app.routers.nb_session.wait_for_notebook_login", new=AsyncMock(return_value={"cookies": []})), \
+def test_provider_update_marks_completed():
+    with patch("app.routers.nb_session._callback_token", return_value="callback-secret"), \
+         patch("app.routers.nb_session._read_auth_session_owner", return_value={
+             "uid": "test-uid",
+             "viewerUrl": "https://viewer",
+             "authFlow": "remote_vnc",
+         }), \
          patch("app.routers.nb_session.save_nb_session", new=AsyncMock(return_value={
              "status": "valid",
              "expiresAt": datetime.now(timezone.utc),
-             "authFlow": "new_tab",
+             "authFlow": "remote_vnc",
          })), \
          patch("app.routers.nb_session._write_auth_session") as mock_write:
-        asyncio.run(nb_session_router._run_auth_flow("test-uid", session))
+        response = asyncio.run(
+            _request(
+                "POST",
+                "/api/nb-session/internal/update",
+                headers={"Authorization": "Bearer callback-secret"},
+                json={
+                    "sessionId": "s1",
+                    "status": "completed",
+                    "storageState": {"cookies": []},
+                },
+            )
+        )
 
-    assert mock_write.call_count == 2
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert mock_write.call_count == 1
+    payload = mock_write.call_args.args[2]
+    assert payload["status"] == "completed"
 
 
-def test_run_auth_flow_marks_failed_on_timeout():
-    session = BrowserlessSession(
-        session_id="s1",
-        connect_url="wss://connect",
-        viewer_url="https://viewer",
-        target_url="https://notebooklm.google.com",
-        timeout_seconds=1,
-    )
-
-    with patch("app.routers.nb_session.wait_for_notebook_login", new=AsyncMock(side_effect=TimeoutError("timed out"))), \
+def test_provider_update_marks_timeout():
+    with patch("app.routers.nb_session._callback_token", return_value="callback-secret"), \
+         patch("app.routers.nb_session._read_auth_session_owner", return_value={
+             "uid": "test-uid",
+             "viewerUrl": "https://viewer",
+             "authFlow": "remote_vnc",
+         }), \
          patch("app.routers.nb_session._write_auth_session") as mock_write:
-        asyncio.run(nb_session_router._run_auth_flow("test-uid", session))
+        response = asyncio.run(
+            _request(
+                "POST",
+                "/api/nb-session/internal/update",
+                headers={"Authorization": "Bearer callback-secret"},
+                json={
+                    "sessionId": "s1",
+                    "status": "timed_out",
+                    "error": "login timed out",
+                },
+            )
+        )
 
-    assert mock_write.call_count == 2
-    last_call = mock_write.call_args_list[-1]
-    assert last_call.args[2]["status"] == "timed_out"
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert mock_write.call_count == 1
+    payload = mock_write.call_args.args[2]
+    assert payload["status"] == "timed_out"
+    assert payload["error"] == "login timed out"

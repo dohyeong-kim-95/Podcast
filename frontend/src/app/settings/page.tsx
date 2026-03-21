@@ -302,7 +302,7 @@ function SettingsContent() {
           <div>
             <p className="text-sm font-semibold">재인증</p>
             <p className="mt-1 text-xs text-[#b3b3b3]">
-              새 탭에서 NotebookLM 로그인을 완료하면 세션이 자동 저장됩니다.
+              열린 원격 브라우저에서 NotebookLM 로그인을 완료하면 세션이 자동 저장됩니다.
             </p>
           </div>
 
@@ -313,7 +313,7 @@ function SettingsContent() {
               rel="noreferrer"
               className="block rounded-lg border border-[#282828] px-4 py-3 text-sm text-[#9ad8ff] hover:border-sky-700/50"
             >
-              재인증 탭 다시 열기
+              재인증 브라우저 다시 열기
             </Link>
           )}
 
@@ -335,7 +335,7 @@ function SettingsContent() {
             disabled={starting || session?.authSession?.status === "pending"}
             className="w-full rounded-full bg-[#1DB954] py-3 text-sm font-semibold text-black transition-colors hover:bg-[#1ed760] disabled:opacity-50"
           >
-            {starting || session?.authSession?.status === "pending" ? "재인증 준비 중..." : "새 탭에서 재인증"}
+            {starting || session?.authSession?.status === "pending" ? "재인증 준비 중..." : "원격 브라우저에서 재인증"}
           </button>
         </section>
 

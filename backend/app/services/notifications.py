@@ -7,11 +7,24 @@ import logging
 import os
 from typing import Any
 
-from pywebpush import WebPushException, webpush
-
 from app.services.db import get_db, json_dumps, utc_now
 
 logger = logging.getLogger(__name__)
+
+
+try:
+    from pywebpush import WebPushException
+except ModuleNotFoundError:  # pragma: no cover - depends on local runtime packaging
+    class WebPushException(Exception):
+        pass
+
+
+def _load_webpush():
+    try:
+        from pywebpush import webpush
+    except ModuleNotFoundError as exc:  # pragma: no cover - depends on local runtime packaging
+        raise RuntimeError("pywebpush is not installed") from exc
+    return webpush
 
 
 def _vapid_private_key() -> str:
@@ -109,6 +122,7 @@ def send_push_to_user(uid: str, *, title: str, body: str, link: str = "/") -> bo
     }
 
     try:
+        webpush = _load_webpush()
         webpush(
             subscription_info=subscription,
             data=json.dumps(payload),
@@ -123,4 +137,3 @@ def send_push_to_user(uid: str, *, title: str, body: str, link: str = "/") -> bo
             clear_push_subscription(uid)
             return False
         raise
-

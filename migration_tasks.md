@@ -140,4 +140,4 @@ These cannot be fully completed from the CLI alone and will be handed back clear
 - configure VAPID key pair and production env values in Vercel/Cloud Run
 - apply Cloud Run env/secrets and redeploy the API service
 - run `./scripts/smoke-vercel-launch.sh` against the real Vercel/Cloud Run URLs
-- verify production flows on `https://podcast.bubblelab.dev`: login, upload, generate, Browserless re-auth, push permission, and push delivery
+- verify production flows on `https://podcast.bubblelab.dev`: login, upload, generate, self-hosted remote-browser re-auth, push permission, and push delivery

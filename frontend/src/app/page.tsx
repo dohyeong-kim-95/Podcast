@@ -250,7 +250,7 @@ function GeneratingState() {
       </div>
       <p className="text-white text-sm font-medium">팟캐스트 생성 중...</p>
       <p className="text-[#535353] text-xs mt-1">
-        잠시만 기다려주세요. 완료되면 자동으로 표시됩니다.
+        약 3~10분 정도 소요될 수 있습니다. 완료되면 자동으로 표시됩니다.
       </p>
     </div>
   );

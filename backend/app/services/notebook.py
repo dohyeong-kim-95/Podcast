@@ -8,6 +8,7 @@ import logging
 import os
 import tempfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -185,13 +186,15 @@ class NotebookLMClient:
     def __init__(self, storage_state: dict):
         self._storage_state = storage_state
         self._client = None
+        self._entered = False
+        self._state_file = None
 
     async def _get_client(self):
         """Lazily initialize the notebooklm-py client."""
         if self._client is not None:
             return self._client
 
-        from notebooklm import NotebookLM
+        from notebooklm import NotebookLMClient as NotebookLMServiceClient
 
         # Write storage state to temp file for notebooklm-py
         self._state_file = tempfile.NamedTemporaryFile(
@@ -200,13 +203,16 @@ class NotebookLMClient:
         json.dump(self._storage_state, self._state_file)
         self._state_file.close()
 
-        self._client = NotebookLM(storage_state=self._state_file.name)
+        self._client = await NotebookLMServiceClient.from_storage(self._state_file.name)
+        if hasattr(self._client, "__aenter__"):
+            await self._client.__aenter__()
+            self._entered = True
         return self._client
 
     async def create_notebook(self, title: str = "Daily Podcast") -> str:
         """Create a new notebook. Returns notebook ID."""
         client = await self._get_client()
-        notebook = await client.create_notebook(title=title)
+        notebook = await client.notebooks.create(title)
         notebook_id = notebook.id if hasattr(notebook, "id") else str(notebook)
         logger.info("Created notebook: %s", notebook_id)
         return notebook_id
@@ -214,7 +220,7 @@ class NotebookLMClient:
     async def add_source(self, notebook_id: str, pdf_path: str) -> None:
         """Add a local PDF file as source to notebook."""
         client = await self._get_client()
-        await client.add_source(notebook_id=notebook_id, file_path=pdf_path)
+        await client.sources.add_file(notebook_id, Path(pdf_path))
         logger.info("Added source to notebook %s: %s", notebook_id, pdf_path)
 
     async def generate_audio(self, notebook_id: str, instructions: str) -> bytes:
@@ -228,41 +234,61 @@ class NotebookLMClient:
             MP3 audio bytes.
         """
         client = await self._get_client()
-        audio = await client.generate_audio(
-            notebook_id=notebook_id,
+        generation = await client.artifacts.generate_audio(
+            notebook_id,
             instructions=instructions,
         )
-        # audio may be bytes directly or an object with .content / .data
-        if isinstance(audio, bytes):
-            return audio
-        if hasattr(audio, "content"):
-            return audio.content
-        if hasattr(audio, "data"):
-            return audio.data
-        # Try reading as file path
-        if isinstance(audio, str):
-            with open(audio, "rb") as f:
+        final = await client.artifacts.wait_for_completion(
+            notebook_id,
+            generation.task_id,
+            timeout=AUDIO_TIMEOUT_SECONDS,
+            poll_interval=5,
+        )
+
+        if not getattr(final, "is_complete", False):
+            status = getattr(final, "status", "unknown")
+            raise RuntimeError(f"audio_generation_incomplete:{status}")
+
+        output_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+        output_file.close()
+        try:
+            output_path = await client.artifacts.download_audio(notebook_id, output_file.name)
+            with open(output_path, "rb") as f:
                 return f.read()
-        raise RuntimeError(f"Unexpected audio response type: {type(audio)}")
+        finally:
+            try:
+                os.unlink(output_file.name)
+            except OSError:
+                pass
 
     async def delete_notebook(self, notebook_id: str) -> None:
         """Delete a notebook (cleanup after generation)."""
         try:
             client = await self._get_client()
-            await client.delete_notebook(notebook_id=notebook_id)
+            await client.notebooks.delete(notebook_id)
             logger.info("Deleted notebook: %s", notebook_id)
         except Exception as e:
             logger.warning("Failed to delete notebook %s: %s", notebook_id, e)
 
     async def close(self) -> None:
         """Clean up resources."""
+        if self._client and self._entered and hasattr(self._client, "__aexit__"):
+            try:
+                await self._client.__aexit__(None, None, None)
+            except Exception:
+                pass
+            finally:
+                self._entered = False
+        elif self._client and hasattr(self._client, "close"):
+            try:
+                await self._client.close()
+            except Exception:
+                pass
+
         if hasattr(self, "_state_file") and self._state_file:
             try:
                 os.unlink(self._state_file.name)
             except OSError:
                 pass
-        if self._client and hasattr(self._client, "close"):
-            try:
-                await self._client.close()
-            except Exception:
-                pass
+        self._state_file = None
+        self._client = None

@@ -65,6 +65,7 @@ def _default_podcast_record(podcast_id: str) -> dict:
         "user_id": None,
         "date": None,
         "status": None,
+        "requested_at": None,
         "source_ids": [],
         "source_count": 0,
         "audio_path": None,
@@ -86,6 +87,7 @@ def _fetch_podcast_record(podcast_id: str) -> dict | None:
                 user_id,
                 date,
                 status,
+                requested_at,
                 source_ids,
                 source_count,
                 audio_path,
@@ -112,6 +114,7 @@ def _save_podcast_record(record: dict) -> None:
                 user_id,
                 date,
                 status,
+                requested_at,
                 source_ids,
                 source_count,
                 audio_path,
@@ -122,11 +125,12 @@ def _save_podcast_record(record: dict) -> None:
                 feedback,
                 downloaded
             )
-            values (%s, %s, %s::date, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
+            values (%s, %s, %s::date, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
             on conflict (id) do update
             set user_id = excluded.user_id,
                 date = excluded.date,
                 status = excluded.status,
+                requested_at = excluded.requested_at,
                 source_ids = excluded.source_ids,
                 source_count = excluded.source_count,
                 audio_path = excluded.audio_path,
@@ -142,6 +146,7 @@ def _save_podcast_record(record: dict) -> None:
                 record["user_id"],
                 record["date"],
                 record["status"],
+                record.get("requested_at"),
                 json_dumps(record.get("source_ids") or []),
                 record.get("source_count") or 0,
                 record.get("audio_path"),
@@ -161,6 +166,7 @@ def _apply_podcast_update(record: dict, **extra_fields) -> dict:
         "date": "date",
         "sourceIds": "source_ids",
         "sourceCount": "source_count",
+        "requestedAt": "requested_at",
         "audioPath": "audio_path",
         "durationSeconds": "duration_seconds",
         "generatedAt": "generated_at",
@@ -301,18 +307,21 @@ def _notify_user(uid: str, *, title: str, body: str, link: str = "/") -> None:
 
 async def _generate_for_user(uid: str, date_str: str) -> dict:
     podcast_id = _podcast_id(uid, date_str)
+    requested_at = utc_now()
 
     existing = _fetch_podcast_record(podcast_id)
     if existing:
         current_status = existing.get("status", "")
         if current_status in _SKIP_STATUSES:
             return {"uid": uid, "skipped": True, "reason": f"status={current_status}"}
+        requested_at = existing.get("requested_at") or requested_at
 
     await _update_podcast_status(
         podcast_id,
         "generating",
         uid=uid,
         date=date_str,
+        requestedAt=requested_at,
         downloaded=False,
     )
 
@@ -510,6 +519,7 @@ async def generate_me(
     uid = user["uid"]
     date_str = _today_kst()
     podcast_id = _podcast_id(uid, date_str)
+    requested_at = utc_now()
 
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(
@@ -530,14 +540,19 @@ async def generate_me(
 
         cur.execute(
             """
-            insert into podcasts (id, user_id, date, status, source_ids, source_count, downloaded)
-            values (%s, %s, %s::date, %s, %s::jsonb, %s, %s)
+            insert into podcasts (id, user_id, date, status, requested_at, source_ids, source_count, downloaded)
+            values (%s, %s, %s::date, %s, %s, %s::jsonb, %s, %s)
             """,
-            (podcast_id, uid, date_str, "generating", json_dumps([]), 0, False),
+            (podcast_id, uid, date_str, "generating", requested_at, json_dumps([]), 0, False),
         )
 
     background_tasks.add_task(_generate_for_user, uid, date_str)
-    return {"status": "generating", "date": date_str, "podcastId": podcast_id}
+    return {
+        "status": "generating",
+        "date": date_str,
+        "podcastId": podcast_id,
+        "requestedAt": serialize_timestamp(requested_at),
+    }
 
 
 @router.get("/podcasts/today")
@@ -558,6 +573,7 @@ async def get_today_podcast(
         "uid": row["user_id"],
         "date": serialize_date(row["date"]),
         "status": row["status"],
+        "requestedAt": serialize_timestamp(row.get("requested_at")),
         "sourceIds": row["source_ids"] or [],
         "sourceCount": row["source_count"],
         "audioPath": row["audio_path"],

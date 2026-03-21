@@ -201,6 +201,7 @@ export interface Podcast {
   uid: string;
   date: string;
   status: string; // "completed" | "generating" | "failed" | "no_sources" | "pending" | "retry_1" | "retry_2"
+  requestedAt?: string;
   audioPath?: string;
   audioUrl?: string;
   durationSeconds?: number;
@@ -228,7 +229,7 @@ export async function markDownloaded(podcastId: string): Promise<void> {
   return apiPost(`/api/podcasts/${podcastId}/downloaded`);
 }
 
-export async function triggerGenerate(): Promise<{ status: string; date: string; podcastId: string }> {
+export async function triggerGenerate(): Promise<{ status: string; date: string; podcastId: string; requestedAt?: string }> {
   return apiPost("/api/generate/me");
 }
 

@@ -104,6 +104,7 @@ def test_generate_me_starts_background_generation():
         response = client.post("/api/generate/me", headers={"Authorization": "Bearer token"})
     assert response.status_code == 200
     assert response.json()["status"] == "generating"
+    assert response.json()["requestedAt"]
 
 
 def test_get_today_podcast_none_for_missing_record():
@@ -119,6 +120,7 @@ def test_get_today_podcast_includes_signed_url_when_completed():
         "user_id": "test-uid",
         "date": datetime.now(timezone(timedelta(hours=9))).date(),
         "status": "completed",
+        "requested_at": datetime.now(timezone.utc),
         "source_ids": ["a", "b"],
         "source_count": 2,
         "audio_path": "podcasts/test-uid/2026-03-19.mp3",
@@ -134,6 +136,7 @@ def test_get_today_podcast_includes_signed_url_when_completed():
         response = client.get("/api/podcasts/today", headers={"Authorization": "Bearer token"})
     assert response.status_code == 200
     assert response.json()["podcast"]["audioUrl"] == "https://signed-url"
+    assert response.json()["podcast"]["requestedAt"]
 
 
 def test_mark_downloaded_not_found():

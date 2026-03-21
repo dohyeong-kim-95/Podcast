@@ -33,3 +33,36 @@ textarea,
 a {
   touch-action: manipulation;
 }
+
+.podcast-generating-shell {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.podcast-generating-shell::before {
+  content: "";
+  position: absolute;
+  inset: -40%;
+  background:
+    conic-gradient(
+      from 0deg,
+      transparent 0deg 300deg,
+      rgba(29, 185, 84, 0.98) 320deg,
+      rgba(182, 255, 214, 0.95) 340deg,
+      transparent 360deg
+    );
+  animation: podcast-generating-spin 3.2s linear infinite;
+  filter: blur(8px);
+}
+
+@keyframes podcast-generating-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}

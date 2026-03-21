@@ -123,7 +123,7 @@ function MainContent() {
         ) : podcast?.status === "completed" && podcast.audioUrl ? (
           <CompletedState podcast={podcast} />
         ) : podcast && ["generating", "pending", "retry_1", "retry_2"].includes(podcast.status) ? (
-          <GeneratingState />
+          <GeneratingState podcast={podcast} />
         ) : podcast?.status === "failed" ? (
           <FailedState />
         ) : podcast?.status === "no_sources" ? (
@@ -242,16 +242,40 @@ function CompletedState({ podcast }: { podcast: Podcast }) {
   );
 }
 
-function GeneratingState() {
+function GeneratingState({ podcast }: { podcast: Podcast }) {
+  const statusLabel =
+    podcast.status === "retry_1" || podcast.status === "retry_2"
+      ? "재시도 중"
+      : podcast.status === "pending"
+        ? "대기 중"
+        : "진행 중";
+  const requestTime = formatRequestTime(podcast.requestedAt);
+
   return (
-    <div className="bg-[#181818] rounded-xl p-6 text-center">
-      <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-[#282828] flex items-center justify-center">
-        <div className="w-6 h-6 border-2 border-[#1DB954] border-t-transparent rounded-full animate-spin" />
+    <div className="podcast-generating-shell rounded-[28px] p-[1px]">
+      <div className="relative rounded-[27px] bg-[#181818] px-5 py-5">
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <p className="text-base font-semibold text-white">팟캐스트 생성 중</p>
+            <p className="text-xs text-[#8e8e8e]">
+              요청 시간 : {requestTime}
+            </p>
+          </div>
+          <span className="rounded-full border border-[#1DB954]/25 bg-[#112117] px-3 py-1 text-[11px] font-semibold text-[#7ee2a0]">
+            {statusLabel}
+          </span>
+        </div>
+
+        <div className="space-y-2 text-sm leading-6 text-[#d2d2d2]">
+          <p>NotebookLM에서 소스를 정리하고 오디오를 만드는 중입니다.</p>
+          <p className="text-[#9a9a9a]">
+            보통 3~10분 정도 걸리고, 길면 20분 안쪽까지 소요될 수 있습니다.
+          </p>
+          <p className="text-[#7e7e7e]">
+            완료되면 이 화면이 자동으로 갱신됩니다.
+          </p>
+        </div>
       </div>
-      <p className="text-white text-sm font-medium">팟캐스트 생성 중...</p>
-      <p className="text-[#535353] text-xs mt-1">
-        약 3~10분 정도 소요될 수 있습니다. 완료되면 자동으로 표시됩니다.
-      </p>
     </div>
   );
 }
@@ -312,4 +336,30 @@ function formatDuration(seconds: number): string {
   if (m === 0) return `${s}초`;
   if (s === 0) return `${m}분`;
   return `${m}분 ${s}초`;
+}
+
+function formatRequestTime(value?: string): string {
+  if (!value) return "기록 없음";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "기록 없음";
+
+  const parts = new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  })
+    .formatToParts(date)
+    .reduce<Record<string, string>>((acc, part) => {
+      if (part.type !== "literal") {
+        acc[part.type] = part.value;
+      }
+      return acc;
+    }, {});
+
+  return `${parts.month}/${parts.day} ${parts.hour}시${parts.minute}분${parts.second}초`;
 }

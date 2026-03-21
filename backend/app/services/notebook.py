@@ -235,6 +235,36 @@ class NotebookLMClient:
         self._entered = False
         self._state_file = None
 
+    def _format_client_error(self, exc: Exception, operation: str) -> str:
+        parts = [str(exc).strip() or exc.__class__.__name__]
+
+        method_id = getattr(exc, "method_id", None)
+        if method_id:
+            parts.append(f"method_id={method_id}")
+
+        rpc_code = getattr(exc, "rpc_code", None)
+        if rpc_code not in (None, ""):
+            parts.append(f"rpc_code={rpc_code}")
+
+        status_code = getattr(exc, "status_code", None)
+        if status_code:
+            parts.append(f"status_code={status_code}")
+
+        found_ids = getattr(exc, "found_ids", None)
+        if found_ids:
+            parts.append(f"found_ids={found_ids}")
+
+        raw_response = getattr(exc, "raw_response", None)
+        if raw_response:
+            compact = " ".join(str(raw_response).split())
+            parts.append(f"raw_response={compact[:240]}")
+
+        original_error = getattr(exc, "original_error", None)
+        if original_error:
+            parts.append(f"original_error={original_error}")
+
+        return f"{operation}: " + " | ".join(parts)
+
     async def _get_client(self):
         """Lazily initialize the notebooklm-py client."""
         if self._client is not None:
@@ -258,7 +288,10 @@ class NotebookLMClient:
     async def create_notebook(self, title: str = "Daily Podcast") -> str:
         """Create a new notebook. Returns notebook ID."""
         client = await self._get_client()
-        notebook = await client.notebooks.create(title)
+        try:
+            notebook = await client.notebooks.create(title)
+        except Exception as exc:
+            raise RuntimeError(self._format_client_error(exc, "create_notebook_failed")) from exc
         notebook_id = notebook.id if hasattr(notebook, "id") else str(notebook)
         logger.info("Created notebook: %s", notebook_id)
         return notebook_id
@@ -266,7 +299,10 @@ class NotebookLMClient:
     async def add_source(self, notebook_id: str, pdf_path: str) -> None:
         """Add a local PDF file as source to notebook."""
         client = await self._get_client()
-        await client.sources.add_file(notebook_id, Path(pdf_path))
+        try:
+            await client.sources.add_file(notebook_id, Path(pdf_path))
+        except Exception as exc:
+            raise RuntimeError(self._format_client_error(exc, "add_source_failed")) from exc
         logger.info("Added source to notebook %s: %s", notebook_id, pdf_path)
 
     async def generate_audio(self, notebook_id: str, instructions: str) -> bytes:
@@ -280,16 +316,19 @@ class NotebookLMClient:
             MP3 audio bytes.
         """
         client = await self._get_client()
-        generation = await client.artifacts.generate_audio(
-            notebook_id,
-            instructions=instructions,
-        )
-        final = await client.artifacts.wait_for_completion(
-            notebook_id,
-            generation.task_id,
-            timeout=AUDIO_TIMEOUT_SECONDS,
-            poll_interval=5,
-        )
+        try:
+            generation = await client.artifacts.generate_audio(
+                notebook_id,
+                instructions=instructions,
+            )
+            final = await client.artifacts.wait_for_completion(
+                notebook_id,
+                generation.task_id,
+                timeout=AUDIO_TIMEOUT_SECONDS,
+                poll_interval=5,
+            )
+        except Exception as exc:
+            raise RuntimeError(self._format_client_error(exc, "generate_audio_failed")) from exc
 
         if not getattr(final, "is_complete", False):
             status = getattr(final, "status", "unknown")
@@ -298,7 +337,10 @@ class NotebookLMClient:
         output_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
         output_file.close()
         try:
-            output_path = await client.artifacts.download_audio(notebook_id, output_file.name)
+            try:
+                output_path = await client.artifacts.download_audio(notebook_id, output_file.name)
+            except Exception as exc:
+                raise RuntimeError(self._format_client_error(exc, "download_audio_failed")) from exc
             with open(output_path, "rb") as f:
                 return f.read()
         finally:

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.services.db import get_db, utc_now
@@ -71,6 +72,18 @@ def _load_audio_timeout_seconds() -> int:
 
 
 AUDIO_TIMEOUT_SECONDS = _load_audio_timeout_seconds()
+
+
+def _load_source_ready_timeout_seconds() -> int:
+    raw = os.getenv("SOURCE_READY_TIMEOUT_SECONDS", "300")
+    try:
+        return max(30, int(raw))
+    except ValueError:
+        logger.warning("Invalid SOURCE_READY_TIMEOUT_SECONDS=%r, falling back to 300", raw)
+        return 300
+
+
+SOURCE_READY_TIMEOUT_SECONDS = _load_source_ready_timeout_seconds()
 
 
 def _get_fernet() -> Fernet:
@@ -265,6 +278,54 @@ class NotebookLMClient:
 
         return f"{operation}: " + " | ".join(parts)
 
+    async def _upload_source_from_memory(self, client, notebook_id: str, pdf_path: Path) -> None:
+        sources_api = client.sources
+        filename = pdf_path.name
+        file_size = pdf_path.stat().st_size
+
+        try:
+            source_id = await sources_api._register_file_source(notebook_id, filename)
+            upload_url = await sources_api._start_resumable_upload(
+                notebook_id,
+                filename,
+                file_size,
+                source_id,
+            )
+        except Exception as exc:
+            raise RuntimeError(self._format_client_error(exc, "register_source_failed")) from exc
+
+        headers = {
+            "Accept": "*/*",
+            "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
+            "Cookie": client.auth.cookie_header,
+            "Origin": "https://notebooklm.google.com",
+            "Referer": "https://notebooklm.google.com/",
+            "x-goog-authuser": "0",
+            "x-goog-upload-command": "upload, finalize",
+            "x-goog-upload-offset": "0",
+        }
+
+        try:
+            payload = pdf_path.read_bytes()
+        except OSError as exc:
+            raise RuntimeError(f"read_source_file_failed: {exc}") from exc
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as upload_client:
+                response = await upload_client.post(upload_url, headers=headers, content=payload)
+                response.raise_for_status()
+        except Exception as exc:
+            raise RuntimeError(self._format_client_error(exc, "upload_source_failed")) from exc
+
+        try:
+            await sources_api.wait_until_ready(
+                notebook_id,
+                source_id,
+                timeout=SOURCE_READY_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            raise RuntimeError(self._format_client_error(exc, "source_ready_wait_failed")) from exc
+
     async def _get_client(self):
         """Lazily initialize the notebooklm-py client."""
         if self._client is not None:
@@ -300,7 +361,7 @@ class NotebookLMClient:
         """Add a local PDF file as source to notebook."""
         client = await self._get_client()
         try:
-            await client.sources.add_file(notebook_id, Path(pdf_path))
+            await self._upload_source_from_memory(client, notebook_id, Path(pdf_path).resolve())
         except Exception as exc:
             raise RuntimeError(self._format_client_error(exc, "add_source_failed")) from exc
         logger.info("Added source to notebook %s: %s", notebook_id, pdf_path)

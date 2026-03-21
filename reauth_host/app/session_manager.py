@@ -238,6 +238,8 @@ class SessionManager:
         chromium_args = [
             self._chromium_executable,
             f"--user-data-dir={profile_dir}",
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-dev-shm-usage",

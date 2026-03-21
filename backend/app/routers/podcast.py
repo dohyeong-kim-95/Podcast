@@ -313,9 +313,11 @@ async def _generate_for_user(uid: str, date_str: str) -> dict:
     if existing:
         current_status = existing.get("status", "")
         if current_status in _SKIP_STATUSES:
+            logger.info("Skipping generation for user %s on %s because status=%s", uid, date_str, current_status)
             return {"uid": uid, "skipped": True, "reason": f"status={current_status}"}
         requested_at = existing.get("requested_at") or requested_at
 
+    logger.info("Starting generation for user %s on %s", uid, date_str)
     await _update_podcast_status(
         podcast_id,
         "generating",
@@ -543,12 +545,12 @@ async def generate_me(
             insert into podcasts (id, user_id, date, status, requested_at, source_ids, source_count, downloaded)
             values (%s, %s, %s::date, %s, %s, %s::jsonb, %s, %s)
             """,
-            (podcast_id, uid, date_str, "generating", requested_at, json_dumps([]), 0, False),
+            (podcast_id, uid, date_str, "pending", requested_at, json_dumps([]), 0, False),
         )
 
     background_tasks.add_task(_generate_for_user, uid, date_str)
     return {
-        "status": "generating",
+        "status": "pending",
         "date": date_str,
         "podcastId": podcast_id,
         "requestedAt": serialize_timestamp(requested_at),

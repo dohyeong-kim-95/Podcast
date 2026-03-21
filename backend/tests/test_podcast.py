@@ -103,7 +103,7 @@ def test_generate_me_starts_background_generation():
     ):
         response = client.post("/api/generate/me", headers={"Authorization": "Bearer token"})
     assert response.status_code == 200
-    assert response.json()["status"] == "generating"
+    assert response.json()["status"] == "pending"
     assert response.json()["requestedAt"]
 
 

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from playwright.async_api import Browser, BrowserContext, Error as PlaywrightError, async_playwright
@@ -24,6 +25,7 @@ _COOKIE_CHECK_URLS = [
     "https://www.google.com",
 ]
 _REQUIRED_COOKIE_NAMES = frozenset({"SID"})
+_GOOGLE_AUTH_TOKEN_PATTERNS = ('"SNlM0e"', '"FdrFJe"')
 
 
 @dataclass
@@ -306,6 +308,13 @@ class SessionManager:
                         )
                         await asyncio.sleep(self._watch_poll_seconds)
                         continue
+                    if not await self._verify_notebooklm_auth(storage_state):
+                        logger.info(
+                            "Reauth session %s has cookies but NotebookLM auth is not reusable yet",
+                            session.session_id,
+                        )
+                        await asyncio.sleep(self._watch_poll_seconds)
+                        continue
 
                     session.status = "completed"
                     await self._notify_backend(
@@ -395,6 +404,60 @@ class SessionManager:
             if isinstance(cookie, dict) and cookie.get("name")
         }
         return sorted(_REQUIRED_COOKIE_NAMES - present)
+
+    def _auth_cookie_header(self, storage_state: dict[str, Any]) -> str:
+        cookies = storage_state.get("cookies")
+        if not isinstance(cookies, list):
+            return ""
+
+        selected: dict[str, tuple[str, str]] = {}
+        for cookie in cookies:
+            if not isinstance(cookie, dict):
+                continue
+            name = str(cookie.get("name") or "")
+            value = str(cookie.get("value") or "")
+            domain = str(cookie.get("domain") or "")
+            if not name or not value or not self._is_allowed_auth_domain(domain):
+                continue
+            current = selected.get(name)
+            if current is None or domain == ".google.com":
+                selected[name] = (value, domain)
+
+        return "; ".join(f"{name}={value}" for name, (value, _domain) in selected.items())
+
+    def _is_allowed_auth_domain(self, domain: str) -> bool:
+        if not domain:
+            return False
+        if domain in {"notebooklm.google.com", ".google.com", ".googleusercontent.com", ".usercontent.google.com"}:
+            return True
+        if domain.startswith(".google."):
+            return True
+        return False
+
+    def _is_google_auth_redirect(self, url: str) -> bool:
+        host = urlparse(url).netloc.lower()
+        return host == "accounts.google.com"
+
+    async def _verify_notebooklm_auth(self, storage_state: dict[str, Any]) -> bool:
+        cookie_header = self._auth_cookie_header(storage_state)
+        if not cookie_header:
+            return False
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(20.0), follow_redirects=True) as client:
+                response = await client.get(
+                    "https://notebooklm.google.com/",
+                    headers={"Cookie": cookie_header},
+                )
+        except httpx.HTTPError:
+            return False
+
+        final_url = str(response.url)
+        if self._is_google_auth_redirect(final_url):
+            return False
+
+        body = response.text
+        return all(token in body for token in _GOOGLE_AUTH_TOKEN_PATTERNS)
 
     async def _notify_backend(self, session: ReauthSession, payload: dict[str, Any]) -> None:
         if session.callback_sent:

@@ -45,6 +45,22 @@ def validate_storage_state(storage_state: dict[str, Any]) -> None:
         raise ValueError(f"NB session storage state missing required cookies: {', '.join(missing)}")
 
 
+async def verify_storage_state_auth(storage_state: dict[str, Any]) -> None:
+    """Verify that the saved Playwright state can actually authenticate NotebookLM."""
+    from notebooklm import AuthTokens
+
+    state_file = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    try:
+        json.dump(storage_state, state_file)
+        state_file.close()
+        await AuthTokens.from_storage(Path(state_file.name))
+    finally:
+        try:
+            os.unlink(state_file.name)
+        except OSError:
+            pass
+
+
 def _load_audio_timeout_seconds() -> int:
     raw = os.getenv("AUDIO_TIMEOUT_SECONDS", str(20 * 60))
     try:
@@ -122,6 +138,7 @@ async def save_nb_session(
 ) -> dict[str, Any]:
     """Persist the current NB session for a user."""
     validate_storage_state(storage_state)
+    await verify_storage_state_auth(storage_state)
     now = utc_now()
     expires_at = now + timedelta(days=expires_in_days)
     encrypted = encrypt_storage_state(storage_state)

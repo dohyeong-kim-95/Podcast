@@ -100,8 +100,22 @@ async def create_session(body: CreateSessionRequest):
 
 @app.get("/internal/sessions/{session_id}", response_model=SessionStatusResponse, dependencies=[Depends(_verify_api_key)])
 async def get_session_status(session_id: str):
-    session = await manager.get_session(session_id)
+    session = await manager.get_session_status(session_id)
     if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    return SessionStatusResponse(
+        sessionId=session.session_id,
+        status=session.status,
+        expiresAt=session.expires_at.astimezone(timezone.utc).isoformat(),
+        error=session.error,
+    )
+
+
+@app.get("/session/{session_id}/status", response_model=SessionStatusResponse)
+async def get_public_session_status(session_id: str, token: str = Query(default="")):
+    session = await manager.get_session_status(session_id)
+    if not session or token != session.viewer_token:
         raise HTTPException(status_code=404, detail="Session not found")
 
     return SessionStatusResponse(
@@ -153,6 +167,37 @@ async def session_view(session_id: str, token: str = Query(default="")):
         display: block;
         margin-bottom: 2px;
       }}
+      .status {{
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(13, 17, 23, 0.92);
+        z-index: 3;
+        text-align: center;
+        padding: 24px;
+      }}
+      .status.visible {{
+        display: flex;
+      }}
+      .status-card {{
+        max-width: 420px;
+        width: 100%;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 18px;
+        padding: 20px;
+        background: rgba(255, 255, 255, 0.04);
+      }}
+      .status-card h1 {{
+        margin: 0 0 8px;
+        font-size: 20px;
+      }}
+      .status-card p {{
+        margin: 0;
+        line-height: 1.5;
+        color: rgba(245, 247, 250, 0.85);
+      }}
     </style>
   </head>
   <body>
@@ -160,10 +205,68 @@ async def session_view(session_id: str, token: str = Query(default="")):
       <strong>NotebookLM 재인증</strong>
       원격 브라우저에서 로그인을 마치면 이 세션은 자동으로 닫힙니다.
     </div>
+    <div class="status" id="statusOverlay">
+      <div class="status-card">
+        <h1 id="statusTitle">세션 처리 중</h1>
+        <p id="statusMessage">잠시만 기다려주세요.</p>
+      </div>
+    </div>
     <iframe
       class="frame"
       src="/novnc/vnc.html?autoconnect=1&resize=scale&show_dot=true&path={ws_path}">
     </iframe>
+    <script>
+      const statusUrl = "/session/{session_id}/status?token={token}";
+      const overlay = document.getElementById("statusOverlay");
+      const titleEl = document.getElementById("statusTitle");
+      const messageEl = document.getElementById("statusMessage");
+
+      function showTerminalState(title, message) {{
+        titleEl.textContent = title;
+        messageEl.textContent = message;
+        overlay.classList.add("visible");
+      }}
+
+      function attemptClose() {{
+        setTimeout(() => window.close(), 300);
+        setTimeout(() => {{
+          if (!window.closed) {{
+            showTerminalState(
+              titleEl.textContent,
+              messageEl.textContent + " 이 탭을 닫고 앱으로 돌아가세요."
+            );
+          }}
+        }}, 1200);
+      }}
+
+      async function pollStatus() {{
+        try {{
+          const response = await fetch(statusUrl, {{ cache: "no-store" }});
+          if (response.status === 404) {{
+            showTerminalState("세션 종료", "재인증 세션이 종료되었습니다.");
+            attemptClose();
+            return;
+          }}
+
+          const data = await response.json();
+          if (data.status === "completed") {{
+            showTerminalState("재인증 완료", "NotebookLM 세션이 저장되었습니다.");
+            attemptClose();
+            return;
+          }}
+          if (data.status === "failed" || data.status === "timed_out") {{
+            showTerminalState("재인증 실패", data.error || "세션이 종료되었습니다.");
+            return;
+          }}
+        }} catch (_error) {{
+          // keep polling through transient network errors
+        }}
+
+        setTimeout(pollStatus, 2000);
+      }}
+
+      setTimeout(pollStatus, 2000);
+    </script>
   </body>
 </html>"""
     return HTMLResponse(html)

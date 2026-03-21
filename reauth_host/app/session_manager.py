@@ -51,6 +51,16 @@ class ReauthSession:
     callback_sent: bool = False
 
 
+@dataclass(frozen=True)
+class FinishedSession:
+    session_id: str
+    viewer_token: str
+    status: str
+    error: str | None
+    expires_at: datetime
+    completed_at: datetime
+
+
 class SessionCapacityError(RuntimeError):
     pass
 
@@ -63,6 +73,7 @@ class SessionManager:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._sessions: dict[str, ReauthSession] = {}
+        self._finished_sessions: dict[str, FinishedSession] = {}
         self._session_root = Path(os.getenv("REAUTH_HOST_SESSION_ROOT", "/tmp/reauth-host")).resolve()
         self._session_root.mkdir(parents=True, exist_ok=True)
         self._public_base_url = self._required_env("REAUTH_HOST_PUBLIC_BASE_URL").rstrip("/")
@@ -71,6 +82,7 @@ class SessionManager:
         self._max_sessions = int(os.getenv("REAUTH_HOST_MAX_SESSIONS", "1"))
         self._display_base = int(os.getenv("REAUTH_HOST_DISPLAY_BASE", "90"))
         self._watch_poll_seconds = float(os.getenv("REAUTH_HOST_WATCH_POLL_SECONDS", "2"))
+        self._finished_session_ttl_seconds = int(os.getenv("REAUTH_HOST_FINISHED_SESSION_TTL_SECONDS", "600"))
 
     @property
     def novnc_static_dir(self) -> str:
@@ -100,6 +112,16 @@ class SessionManager:
     def _build_viewer_url(self, session_id: str, viewer_token: str) -> str:
         return f"{self._public_base_url}/session/{session_id}?token={viewer_token}"
 
+    def _prune_finished_sessions(self) -> None:
+        now = datetime.now(timezone.utc)
+        expired = [
+            session_id
+            for session_id, session in self._finished_sessions.items()
+            if (now - session.completed_at).total_seconds() > self._finished_session_ttl_seconds
+        ]
+        for session_id in expired:
+            self._finished_sessions.pop(session_id, None)
+
     async def create_session(
         self,
         *,
@@ -110,9 +132,11 @@ class SessionManager:
         callback_token: str,
     ) -> ReauthSession:
         async with self._lock:
+            self._prune_finished_sessions()
             active_sessions = [session for session in self._sessions.values() if session.status == "pending"]
             if len(active_sessions) >= self._max_sessions:
                 raise SessionCapacityError("Another re-auth session is already active")
+            self._finished_sessions.pop(session_id, None)
 
             viewer_token = secrets.token_urlsafe(24)
             created_at = datetime.now(timezone.utc)
@@ -146,11 +170,29 @@ class SessionManager:
 
     async def get_session(self, session_id: str) -> ReauthSession | None:
         async with self._lock:
+            self._prune_finished_sessions()
             return self._sessions.get(session_id)
+
+    async def get_session_status(self, session_id: str) -> ReauthSession | FinishedSession | None:
+        async with self._lock:
+            self._prune_finished_sessions()
+            active = self._sessions.get(session_id)
+            if active:
+                return active
+            return self._finished_sessions.get(session_id)
 
     async def cleanup_session(self, session_id: str, *, from_watcher: bool = False) -> None:
         async with self._lock:
             session = self._sessions.pop(session_id, None)
+            if session:
+                self._finished_sessions[session_id] = FinishedSession(
+                    session_id=session.session_id,
+                    viewer_token=session.viewer_token,
+                    status=session.status,
+                    error=session.error,
+                    expires_at=session.expires_at,
+                    completed_at=datetime.now(timezone.utc),
+                )
 
         if not session:
             return

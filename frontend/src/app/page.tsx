@@ -11,9 +11,11 @@ import { useAuth } from "@/lib/auth-context";
 import {
   getNbSessionStatus,
   getTodayPodcast,
+  listSources,
   triggerGenerate,
   type NbSessionStatusResponse,
   type Podcast,
+  type Source,
 } from "@/lib/api";
 
 export default function Home() {
@@ -27,6 +29,7 @@ export default function Home() {
 function MainContent() {
   const { user, signOut } = useAuth();
   const [podcast, setPodcast] = useState<Podcast | null>(null);
+  const [todaySources, setTodaySources] = useState<Source[]>([]);
   const [nbSession, setNbSession] = useState<NbSessionStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [triggeringGenerate, setTriggeringGenerate] = useState(false);
@@ -35,12 +38,14 @@ function MainContent() {
   const fetchPodcast = useCallback(async () => {
     try {
       setError(null);
-      const [podcastRes, nbSessionRes] = await Promise.all([
+      const [podcastRes, nbSessionRes, sourcesRes] = await Promise.all([
         getTodayPodcast(),
         getNbSessionStatus().catch(() => null),
+        listSources().catch(() => ({ date: "", sources: [] as Source[] })),
       ]);
       setPodcast(podcastRes.podcast);
       setNbSession(nbSessionRes);
+      setTodaySources(sourcesRes.sources);
     } catch {
       setError("팟캐스트 정보를 불러올 수 없습니다");
     } finally {
@@ -83,10 +88,19 @@ function MainContent() {
   const sessionReady = !nbSession || ["valid", "expiring_soon"].includes(nbSession.status);
   const canRetryToday = podcast?.status === "no_sources" || podcast?.status === "failed";
   const generationActive = !!podcast && ["generating", "pending", "retry_1", "retry_2"].includes(podcast.status);
+  const hasTodaySources = todaySources.length > 0;
   const generateRemainingToday = podcast && !canRetryToday ? 0 : 1;
-  const generateDisabled = loading || triggeringGenerate || generationActive || (!canRetryToday && !!podcast) || !sessionReady;
+  const generateDisabled =
+    loading ||
+    triggeringGenerate ||
+    generationActive ||
+    (!canRetryToday && !!podcast) ||
+    !sessionReady ||
+    !hasTodaySources;
   const generateHint = !sessionReady
     ? "NotebookLM 재인증 후 사용할 수 있습니다"
+    : !hasTodaySources
+      ? "업로드 탭의 오늘 소스가 아직 없습니다"
     : generationActive
       ? "지금 생성이 진행 중입니다"
       : podcast?.status === "completed"
@@ -139,6 +153,8 @@ function MainContent() {
         ) : (
           <EmptyState />
         )}
+
+        <SourceSyncCard sources={todaySources} />
 
         <Link
           href="/upload"
@@ -314,7 +330,7 @@ function NoSourcesState() {
       </div>
       <p className="text-white text-sm font-medium">오늘 생성에 포함된 소스가 없습니다</p>
       <p className="text-[#535353] text-xs mt-1">
-        생성 시점에 사용할 수 있는 소스가 없었습니다. 지금 파일을 올렸다면 즉시 생성 버튼으로 다시 시도할 수 있습니다.
+        이전 생성 시점에는 사용할 수 있는 소스가 없었습니다. 지금 파일을 올렸다면 아래 요약 카드와 즉시 생성 버튼에서 반영 여부를 확인할 수 있습니다.
       </p>
     </div>
   );
@@ -338,12 +354,62 @@ function EmptyState() {
   );
 }
 
+function SourceSyncCard({ sources }: { sources: Source[] }) {
+  const summary = summarizeSources(sources);
+
+  return (
+    <div className="rounded-2xl border border-[#242424] bg-[#171717] px-4 py-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-white">오늘 생성 소스</p>
+          <p className="mt-1 text-xs text-[#8d8d8d]">
+            {summary.description}
+          </p>
+        </div>
+        <span className="rounded-full border border-white/10 px-3 py-1 text-xs font-semibold text-[#d7d7d7]">
+          {sources.length}개
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   if (m === 0) return `${s}초`;
   if (s === 0) return `${m}분`;
   return `${m}분 ${s}초`;
+}
+
+function summarizeSources(sources: Source[]): { description: string } {
+  if (sources.length === 0) {
+    return {
+      description: "업로드 탭의 오늘 소스와 동기화됩니다. 파일을 올리면 여기에도 바로 반영됩니다.",
+    };
+  }
+
+  const counts = new Map<string, number>();
+  for (const source of sources) {
+    const label = sourceTypeLabel(source.originalType);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+
+  const breakdown = Array.from(counts.entries())
+    .map(([label, count]) => `${count} ${label}`)
+    .join(", ");
+
+  return {
+    description: `팟캐스트가 ${sources.length}개 문서(${breakdown}) 기반으로 생성됩니다.`,
+  };
+}
+
+function sourceTypeLabel(contentType: string): string {
+  if (contentType === "application/pdf") return "PDF";
+  if (contentType === "image/png") return "PNG";
+  if (contentType === "image/jpeg") return "JPG";
+  if (contentType === "image/webp") return "WEBP";
+  return "문서";
 }
 
 function formatRequestTime(value?: string): string {

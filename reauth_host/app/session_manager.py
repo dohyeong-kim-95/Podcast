@@ -18,6 +18,13 @@ from playwright.async_api import Browser, BrowserContext, Error as PlaywrightErr
 
 logger = logging.getLogger(__name__)
 
+_COOKIE_CHECK_URLS = [
+    "https://notebooklm.google.com",
+    "https://accounts.google.com",
+    "https://www.google.com",
+]
+_REQUIRED_COOKIE_NAMES = frozenset({"SID"})
+
 
 @dataclass
 class ReauthSession:
@@ -289,7 +296,17 @@ class SessionManager:
 
                 context = await self._find_logged_in_context(browser, session.target_url)
                 if context:
-                    storage_state = await context.storage_state()
+                    storage_state = await self._build_storage_state(context)
+                    missing = self._missing_required_cookie_names(storage_state)
+                    if missing:
+                        logger.info(
+                            "Reauth session %s reached target page but is still missing cookies: %s",
+                            session.session_id,
+                            ", ".join(missing),
+                        )
+                        await asyncio.sleep(self._watch_poll_seconds)
+                        continue
+
                     session.status = "completed"
                     await self._notify_backend(
                         session,
@@ -351,6 +368,33 @@ class SessionManager:
                     return context
 
         return None
+
+    async def _build_storage_state(self, context: BrowserContext) -> dict[str, Any]:
+        storage_state = await context.storage_state()
+        explicit_cookies = await context.cookies(_COOKIE_CHECK_URLS)
+
+        merged = {}
+        for cookie in storage_state.get("cookies", []):
+            if isinstance(cookie, dict):
+                merged[(cookie.get("name"), cookie.get("domain"), cookie.get("path"))] = cookie
+        for cookie in explicit_cookies:
+            if isinstance(cookie, dict):
+                merged[(cookie.get("name"), cookie.get("domain"), cookie.get("path"))] = cookie
+
+        storage_state["cookies"] = list(merged.values())
+        return storage_state
+
+    def _missing_required_cookie_names(self, storage_state: dict[str, Any]) -> list[str]:
+        cookies = storage_state.get("cookies")
+        if not isinstance(cookies, list):
+            return sorted(_REQUIRED_COOKIE_NAMES)
+
+        present = {
+            str(cookie.get("name"))
+            for cookie in cookies
+            if isinstance(cookie, dict) and cookie.get("name")
+        }
+        return sorted(_REQUIRED_COOKIE_NAMES - present)
 
     async def _notify_backend(self, session: ReauthSession, payload: dict[str, Any]) -> None:
         if session.callback_sent:

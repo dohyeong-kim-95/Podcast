@@ -17,6 +17,34 @@ from app.services.db import get_db, utc_now
 
 logger = logging.getLogger(__name__)
 
+
+def _required_cookie_names() -> set[str]:
+    raw = os.getenv("NB_REQUIRED_COOKIE_NAMES", "SID")
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def missing_required_cookie_names(storage_state: dict[str, Any]) -> list[str]:
+    cookies = storage_state.get("cookies")
+    if not isinstance(cookies, list):
+        return sorted(_required_cookie_names())
+
+    present = {
+        str(cookie.get("name"))
+        for cookie in cookies
+        if isinstance(cookie, dict) and cookie.get("name")
+    }
+    return sorted(_required_cookie_names() - present)
+
+
+def validate_storage_state(storage_state: dict[str, Any]) -> None:
+    if not isinstance(storage_state, dict):
+        raise ValueError("NB session storage state must be a JSON object")
+
+    missing = missing_required_cookie_names(storage_state)
+    if missing:
+        raise ValueError(f"NB session storage state missing required cookies: {', '.join(missing)}")
+
+
 def _load_audio_timeout_seconds() -> int:
     raw = os.getenv("AUDIO_TIMEOUT_SECONDS", str(20 * 60))
     try:
@@ -93,6 +121,7 @@ async def save_nb_session(
     expires_in_days: int = 30,
 ) -> dict[str, Any]:
     """Persist the current NB session for a user."""
+    validate_storage_state(storage_state)
     now = utc_now()
     expires_at = now + timedelta(days=expires_in_days)
     encrypted = encrypt_storage_state(storage_state)

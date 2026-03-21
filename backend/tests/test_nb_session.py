@@ -149,6 +149,35 @@ def test_provider_update_marks_completed():
     assert payload["status"] == "completed"
 
 
+def test_provider_update_rejects_invalid_storage_state():
+    with patch("app.routers.nb_session._callback_token", return_value="callback-secret"), \
+         patch("app.routers.nb_session._read_auth_session_owner", return_value={
+             "uid": "test-uid",
+             "viewerUrl": "https://viewer",
+             "authFlow": "remote_vnc",
+         }), \
+         patch("app.routers.nb_session.save_nb_session", new=AsyncMock(side_effect=ValueError("NB session storage state missing required cookies: SID"))), \
+         patch("app.routers.nb_session._write_auth_session") as mock_write:
+        response = asyncio.run(
+            _request(
+                "POST",
+                "/api/nb-session/internal/update",
+                headers={"Authorization": "Bearer callback-secret"},
+                json={
+                    "sessionId": "s1",
+                    "status": "completed",
+                    "storageState": {"cookies": []},
+                },
+            )
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    payload = mock_write.call_args.args[2]
+    assert payload["status"] == "failed"
+    assert "required cookies: SID" in payload["error"]
+
+
 def test_provider_update_marks_timeout():
     with patch("app.routers.nb_session._callback_token", return_value="callback-secret"), \
          patch("app.routers.nb_session._read_auth_session_owner", return_value={

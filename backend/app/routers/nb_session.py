@@ -364,7 +364,25 @@ async def update_auth_session_from_provider(
         if not body.storageState:
             raise HTTPException(status_code=400, detail="storageState is required for completed status")
 
-        session_meta = await save_nb_session(uid, body.storageState, auth_flow=auth_flow)
+        try:
+            session_meta = await save_nb_session(uid, body.storageState, auth_flow=auth_flow)
+        except ValueError as exc:
+            error_message = str(exc)
+            _write_auth_session(
+                uid,
+                body.sessionId,
+                {
+                    "status": "failed",
+                    "viewerUrl": viewer_url,
+                    "authFlow": auth_flow,
+                    "updatedAt": completed_at,
+                    "completedAt": completed_at,
+                    "error": error_message,
+                },
+            )
+            logger.warning("Rejected invalid NB session for user %s session %s: %s", uid, body.sessionId, error_message)
+            return {"ok": True}
+
         _write_auth_session(
             uid,
             body.sessionId,

@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["podcast"])
 
 KST = timezone(timedelta(hours=9))
-_SKIP_STATUSES = {"completed", "generating", "retry_1", "retry_2", "no_sources"}
+_SKIP_STATUSES = {"completed", "generating", "no_sources"}
 
 
 def _sources_bucket() -> str:
@@ -582,7 +582,7 @@ async def generate_me(
             (podcast_id,),
         )
         row = cur.fetchone()
-        if row and row["status"] not in {"failed", "no_sources"}:
+        if row and row["status"] not in {"failed", "no_sources", "retry_1", "retry_2"}:
             raise HTTPException(
                 status_code=409,
                 detail="Immediate podcast generation is limited to once per day",

@@ -117,7 +117,7 @@ function MainContent() {
   useEffect(() => {
     if (!podcast) return;
     const status = podcast.status;
-    if (!["generating", "pending", "retry_1", "retry_2"].includes(status)) return;
+    if (!["generating", "pending"].includes(status)) return;
 
     const interval = setInterval(fetchPodcast, 5000);
     return () => clearInterval(interval);
@@ -150,8 +150,12 @@ function MainContent() {
   }, [fetchPodcast, podcast, todaySources, nbSession]);
 
   const sessionReady = !nbSession || ["valid", "expiring_soon"].includes(nbSession.status);
-  const canRetryToday = podcast?.status === "no_sources" || podcast?.status === "failed";
-  const generationActive = !!podcast && ["generating", "pending", "retry_1", "retry_2"].includes(podcast.status);
+  const canRetryToday =
+    podcast?.status === "no_sources" ||
+    podcast?.status === "failed" ||
+    podcast?.status === "retry_1" ||
+    podcast?.status === "retry_2";
+  const generationActive = !!podcast && ["generating", "pending"].includes(podcast.status);
   const hasTodaySources = todaySources.length > 0;
   const generateRemainingToday = podcast && !canRetryToday ? 0 : 1;
   const generateDisabled =
@@ -208,7 +212,7 @@ function MainContent() {
           <LoadingState />
         ) : podcast?.status === "completed" && podcast.audioUrl ? (
           <CompletedState podcast={podcast} />
-        ) : podcast && ["generating", "pending", "retry_1", "retry_2"].includes(podcast.status) ? (
+        ) : podcast && ["generating", "pending"].includes(podcast.status) ? (
           <GeneratingState podcast={podcast} />
         ) : hasTodaySources ? (
           <ReadyToGenerateState sources={todaySources} podcastStatus={podcast?.status} />
@@ -427,7 +431,7 @@ function ReadyToGenerateState({
 }) {
   const summary = summarizeSources(sources);
   const helper =
-    podcastStatus === "failed"
+    podcastStatus === "failed" || podcastStatus === "retry_1" || podcastStatus === "retry_2"
       ? "이전 생성은 실패했지만, 현재 업로드된 소스로 다시 시도할 수 있습니다."
       : podcastStatus === "no_sources"
         ? "이전 생성 시점에는 소스가 없었지만, 지금은 다시 시도할 수 있습니다."

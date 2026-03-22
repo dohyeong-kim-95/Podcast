@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import tempfile
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -84,6 +85,28 @@ def _load_source_ready_timeout_seconds() -> int:
 
 
 SOURCE_READY_TIMEOUT_SECONDS = _load_source_ready_timeout_seconds()
+
+
+def _load_operation_retry_count() -> int:
+    raw = os.getenv("NOTEBOOKLM_OPERATION_RETRY_COUNT", "3")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning("Invalid NOTEBOOKLM_OPERATION_RETRY_COUNT=%r, falling back to 3", raw)
+        return 3
+
+
+def _load_operation_retry_delay_seconds() -> float:
+    raw = os.getenv("NOTEBOOKLM_OPERATION_RETRY_DELAY_SECONDS", "1.5")
+    try:
+        return max(0.1, float(raw))
+    except ValueError:
+        logger.warning("Invalid NOTEBOOKLM_OPERATION_RETRY_DELAY_SECONDS=%r, falling back to 1.5", raw)
+        return 1.5
+
+
+NOTEBOOKLM_OPERATION_RETRY_COUNT = _load_operation_retry_count()
+NOTEBOOKLM_OPERATION_RETRY_DELAY_SECONDS = _load_operation_retry_delay_seconds()
 
 
 def _get_fernet() -> Fernet:
@@ -250,6 +273,7 @@ class NotebookLMClient:
 
     def _format_client_error(self, exc: Exception, operation: str) -> str:
         parts = [str(exc).strip() or exc.__class__.__name__]
+        parts.append(f"error_type={exc.__class__.__name__}")
 
         method_id = getattr(exc, "method_id", None)
         if method_id:
@@ -274,9 +298,60 @@ class NotebookLMClient:
 
         original_error = getattr(exc, "original_error", None)
         if original_error:
-            parts.append(f"original_error={original_error}")
+            parts.append(f"original_error_type={original_error.__class__.__name__}")
+            parts.append(f"original_error_repr={original_error!r}")
 
         return f"{operation}: " + " | ".join(parts)
+
+    def _is_retryable_client_error(self, exc: Exception) -> bool:
+        text = str(exc).lower()
+        error_type = exc.__class__.__name__.lower()
+
+        if any(token in text for token in ("request failed calling", "readerror", "timed out", "timeout")):
+            return True
+        if error_type in {"networkerror", "readerror", "connecterror", "timeoutexception"}:
+            return True
+
+        original_error = getattr(exc, "original_error", None)
+        if original_error is not None:
+            original_text = repr(original_error).lower()
+            original_type = original_error.__class__.__name__.lower()
+            if any(token in original_text for token in ("readerror", "connecterror", "timeout")):
+                return True
+            if original_type in {"readerror", "connecterror", "timeoutexception"}:
+                return True
+
+        return False
+
+    async def _refresh_auth_if_possible(self) -> None:
+        if self._client and hasattr(self._client, "refresh_auth"):
+            try:
+                await self._client.refresh_auth()
+            except Exception as exc:
+                logger.warning("NotebookLM auth refresh failed during retry: %s", exc)
+
+    async def _run_with_retry(self, operation: str, func):
+        last_exc = None
+        for attempt in range(1, NOTEBOOKLM_OPERATION_RETRY_COUNT + 1):
+            try:
+                return await func()
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= NOTEBOOKLM_OPERATION_RETRY_COUNT or not self._is_retryable_client_error(exc):
+                    raise
+
+                logger.warning(
+                    "Retrying NotebookLM %s after attempt %s/%s: %s",
+                    operation,
+                    attempt,
+                    NOTEBOOKLM_OPERATION_RETRY_COUNT,
+                    self._format_client_error(exc, f"{operation}_retry"),
+                )
+                await self._refresh_auth_if_possible()
+                await asyncio.sleep(NOTEBOOKLM_OPERATION_RETRY_DELAY_SECONDS * attempt)
+
+        if last_exc:
+            raise last_exc
 
     async def _upload_source_from_memory(self, client, notebook_id: str, pdf_path: Path) -> None:
         sources_api = client.sources
@@ -350,7 +425,10 @@ class NotebookLMClient:
         """Create a new notebook. Returns notebook ID."""
         client = await self._get_client()
         try:
-            notebook = await client.notebooks.create(title)
+            notebook = await self._run_with_retry(
+                "create_notebook",
+                lambda: client.notebooks.create(title),
+            )
         except Exception as exc:
             raise RuntimeError(self._format_client_error(exc, "create_notebook_failed")) from exc
         notebook_id = notebook.id if hasattr(notebook, "id") else str(notebook)
@@ -361,7 +439,10 @@ class NotebookLMClient:
         """Add a local PDF file as source to notebook."""
         client = await self._get_client()
         try:
-            await self._upload_source_from_memory(client, notebook_id, Path(pdf_path).resolve())
+            await self._run_with_retry(
+                "add_source",
+                lambda: self._upload_source_from_memory(client, notebook_id, Path(pdf_path).resolve()),
+            )
         except Exception as exc:
             raise RuntimeError(self._format_client_error(exc, "add_source_failed")) from exc
         logger.info("Added source to notebook %s: %s", notebook_id, pdf_path)

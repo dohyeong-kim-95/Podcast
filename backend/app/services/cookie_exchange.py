@@ -83,6 +83,21 @@ async def exchange_access_token_for_cookies(
         follow_redirects=True,
         timeout=httpx.Timeout(30.0),
     ) as client:
+        # Step 0: Check token scopes via tokeninfo (debug)
+        logger.info("[cookie_exchange] Step 0: Checking access_token via tokeninfo")
+        try:
+            tokeninfo_resp = await client.get(
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"access_token": access_token},
+            )
+            logger.info(
+                "[cookie_exchange] tokeninfo HTTP %d, body=%s",
+                tokeninfo_resp.status_code,
+                tokeninfo_resp.text[:500],
+            )
+        except Exception as exc:
+            logger.warning("[cookie_exchange] tokeninfo check failed (non-fatal): %s", exc)
+
         # Step 1: access_token → uberauth
         logger.info("[cookie_exchange] Step 1: OAuthLogin — requesting uberauth token")
         try:

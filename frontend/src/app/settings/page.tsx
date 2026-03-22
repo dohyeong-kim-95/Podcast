@@ -254,15 +254,13 @@ function SettingsContent() {
             {starting ? "세션 갱신 중..." : "세션 갱신"}
           </button>
 
-          {lastReauthErrorCode === "no_refresh_token" || lastReauthErrorCode === "token_expired" ? (
-            <button
-              type="button"
-              onClick={handleReAuthWithGoogle}
-              className="w-full rounded-full border border-[#1DB954]/40 bg-[#1DB954]/10 py-3 text-sm font-semibold text-[#9ef0b7] transition-colors hover:bg-[#1DB954]/20"
-            >
-              Google 재로그인
-            </button>
-          ) : null}
+          <button
+            type="button"
+            onClick={handleReAuthWithGoogle}
+            className="w-full rounded-full border border-[#1DB954]/40 bg-[#1DB954]/10 py-3 text-sm font-semibold text-[#9ef0b7] transition-colors hover:bg-[#1DB954]/20"
+          >
+            Google 재로그인
+          </button>
         </section>
 
         <section className="space-y-3 rounded-xl bg-[#181818] p-4">

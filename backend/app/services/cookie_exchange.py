@@ -1,7 +1,6 @@
 """Exchange Google OAuth access_token for NotebookLM session cookies.
 
-Uses Google's OAuthLogin and MergeSession endpoints (same mechanism Chromium
-uses for account sign-in) to convert an OAuth access_token into browser-session
+Tries multiple approaches to convert an OAuth access_token into browser-session
 cookies (SID, HSID, SSID, etc.) that notebooklm-py can use.
 """
 
@@ -11,8 +10,6 @@ from typing import Any
 import httpx
 
 logger = logging.getLogger(__name__)
-
-_MERGE_CONTINUE_URL = "https://notebooklm.google.com"
 
 # Domains whose cookies we want to keep in the storage state.
 _ALLOWED_COOKIE_DOMAINS = frozenset({
@@ -41,7 +38,6 @@ def _build_storage_state_from_jar(jar: httpx.Cookies) -> dict[str, Any]:
     for cookie in jar.jar:
         domain = cookie.domain or ""
         if not _is_allowed_domain(domain):
-            logger.debug("[cookie_exchange] Skipping cookie %s from non-Google domain %s", cookie.name, domain)
             continue
         cookies.append({
             "name": cookie.name,
@@ -52,155 +48,187 @@ def _build_storage_state_from_jar(jar: httpx.Cookies) -> dict[str, Any]:
             "secure": bool(cookie.secure),
             "sameSite": "None",
         })
-    logger.info(
-        "[cookie_exchange] Built storage_state: %d cookies from jar (%d total in jar)",
-        len(cookies), len(list(jar.jar)),
-    )
     return {"cookies": cookies, "origins": []}
+
+
+def _log_jar(label: str, jar: httpx.Cookies) -> None:
+    names = sorted({c.name for c in jar.jar})
+    domains = sorted({c.domain for c in jar.jar})
+    logger.info("[cookie_exchange] %s: %d cookies, names=%s, domains=%s",
+                label, len(list(jar.jar)), names, domains)
 
 
 async def exchange_access_token_for_cookies(
     access_token: str,
 ) -> dict[str, Any]:
-    """Exchange a Google access_token for a Playwright-format storage_state.
+    """Try multiple approaches to exchange access_token for session cookies.
 
-    Steps:
-    1. GET /OAuthLogin → uberauth token
-    2. GET /MergeSession → browser cookies (SID, etc.)
-
-    Returns:
-        dict: Playwright-compatible storage_state with cookies.
-
-    Raises:
-        ValueError: If the exchange produces invalid/empty results.
-        RuntimeError: If an HTTP request fails.
+    Returns Playwright-compatible storage_state dict on success.
+    Raises ValueError/RuntimeError on failure.
     """
-    logger.info("[cookie_exchange] Starting exchange (access_token len=%d)", len(access_token))
-    jar = httpx.Cookies()
+    logger.info("[cookie_exchange] === START === access_token len=%d", len(access_token))
 
-    async with httpx.AsyncClient(
-        cookies=jar,
-        follow_redirects=True,
-        timeout=httpx.Timeout(30.0),
-    ) as client:
-        # Step 0: Check token scopes via tokeninfo (debug)
-        logger.info("[cookie_exchange] Step 0: Checking access_token via tokeninfo")
-        try:
-            tokeninfo_resp = await client.get(
-                "https://oauth2.googleapis.com/tokeninfo",
+    # ── Step 0: Validate token via tokeninfo ──
+    logger.info("[cookie_exchange] Step 0: tokeninfo check")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as c:
+            ti = await c.get("https://oauth2.googleapis.com/tokeninfo",
+                             params={"access_token": access_token})
+            logger.info("[cookie_exchange] tokeninfo: HTTP %d, body=%s",
+                        ti.status_code, ti.text[:500])
+    except Exception as exc:
+        logger.warning("[cookie_exchange] tokeninfo failed (non-fatal): %s", exc)
+
+    # ── Approach A: Bearer token on NotebookLM directly ──
+    # Test if Google sets session cookies when we access NotebookLM with a bearer token
+    logger.info("[cookie_exchange] --- Approach A: Bearer token on notebooklm.google.com ---")
+    try:
+        jar_a = httpx.Cookies()
+        async with httpx.AsyncClient(cookies=jar_a, follow_redirects=True,
+                                     timeout=httpx.Timeout(30.0)) as c:
+            resp_a = await c.get(
+                "https://notebooklm.google.com/",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            has_snlm0e = "SNlM0e" in resp_a.text
+            logger.info(
+                "[cookie_exchange] A result: HTTP %d, final_url=%s, has_SNlM0e=%s, body_len=%d, body_preview=%s",
+                resp_a.status_code, str(resp_a.url)[:200], has_snlm0e,
+                len(resp_a.text), resp_a.text[:300].replace('\n', ' '),
+            )
+            _log_jar("A cookies", jar_a)
+            if resp_a.history:
+                logger.info("[cookie_exchange] A redirects: %s",
+                            [f"{r.status_code}→{str(r.url)[:100]}" for r in resp_a.history])
+
+            # Check Set-Cookie headers from ALL responses in the chain
+            all_set_cookies = []
+            for r in [*resp_a.history, resp_a]:
+                sc = r.headers.get_list("set-cookie")
+                if sc:
+                    all_set_cookies.extend(sc)
+            if all_set_cookies:
+                logger.info("[cookie_exchange] A set-cookie headers (%d): %s",
+                            len(all_set_cookies),
+                            [s[:80] for s in all_set_cookies[:10]])
+
+            # If we got SID cookie from this approach, use it!
+            storage_a = _build_storage_state_from_jar(jar_a)
+            cookie_names_a = {c["name"] for c in storage_a["cookies"]}
+            if "SID" in cookie_names_a and has_snlm0e:
+                logger.info("[cookie_exchange] Approach A WORKED! SID + SNlM0e present")
+                return storage_a
+    except Exception as exc:
+        logger.warning("[cookie_exchange] Approach A failed: %s", exc)
+
+    # ── Approach B: Bearer token on accounts.google.com ──
+    # See if Google's account page sets cookies when given a bearer token
+    logger.info("[cookie_exchange] --- Approach B: Bearer token on accounts.google.com ---")
+    try:
+        jar_b = httpx.Cookies()
+        async with httpx.AsyncClient(cookies=jar_b, follow_redirects=True,
+                                     timeout=httpx.Timeout(30.0)) as c:
+            resp_b = await c.get(
+                "https://accounts.google.com/",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            logger.info(
+                "[cookie_exchange] B result: HTTP %d, final_url=%s, body_len=%d",
+                resp_b.status_code, str(resp_b.url)[:200], len(resp_b.text),
+            )
+            _log_jar("B cookies", jar_b)
+    except Exception as exc:
+        logger.warning("[cookie_exchange] Approach B failed: %s", exc)
+
+    # ── Approach C: OAuthLogin without ChromiumBrowser source ──
+    # Try OAuthLogin with different/no source parameter
+    logger.info("[cookie_exchange] --- Approach C: OAuthLogin (no source) ---")
+    try:
+        jar_c = httpx.Cookies()
+        async with httpx.AsyncClient(cookies=jar_c, follow_redirects=True,
+                                     timeout=httpx.Timeout(30.0)) as c:
+            resp_c = await c.get(
+                "https://accounts.google.com/OAuthLogin",
+                params={"issueuberauth": "1"},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            logger.info(
+                "[cookie_exchange] C result: HTTP %d, body=%s",
+                resp_c.status_code, resp_c.text[:300],
+            )
+            _log_jar("C cookies", jar_c)
+    except Exception as exc:
+        logger.warning("[cookie_exchange] Approach C failed: %s", exc)
+
+    # ── Approach D: OAuthLogin with source=ChromiumBrowser (original) ──
+    logger.info("[cookie_exchange] --- Approach D: OAuthLogin (ChromiumBrowser source) ---")
+    try:
+        jar_d = httpx.Cookies()
+        async with httpx.AsyncClient(cookies=jar_d, follow_redirects=True,
+                                     timeout=httpx.Timeout(30.0)) as c:
+            resp_d = await c.get(
+                "https://accounts.google.com/OAuthLogin",
+                params={"source": "ChromiumBrowser", "issueuberauth": "1"},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            uberauth = resp_d.text.strip()
+            logger.info(
+                "[cookie_exchange] D result: HTTP %d, body_len=%d, body=%s",
+                resp_d.status_code, len(uberauth), uberauth[:200],
+            )
+            _log_jar("D cookies", jar_d)
+
+            # If D succeeded (HTTP 200 + valid uberauth), try MergeSession
+            if resp_d.status_code == 200 and len(uberauth) > 10 and "Error" not in uberauth:
+                logger.info("[cookie_exchange] D got uberauth, trying MergeSession...")
+                merge_resp = await c.get(
+                    "https://accounts.google.com/MergeSession",
+                    params={
+                        "uberauth": uberauth,
+                        "continue": "https://notebooklm.google.com",
+                        "source": "ChromiumBrowser",
+                    },
+                )
+                logger.info("[cookie_exchange] D MergeSession: HTTP %d, final_url=%s",
+                            merge_resp.status_code, str(merge_resp.url)[:200])
+                _log_jar("D after MergeSession", jar_d)
+
+                storage_d = _build_storage_state_from_jar(jar_d)
+                cookie_names_d = {c["name"] for c in storage_d["cookies"]}
+                if "SID" in cookie_names_d:
+                    logger.info("[cookie_exchange] Approach D WORKED!")
+                    return storage_d
+    except Exception as exc:
+        logger.warning("[cookie_exchange] Approach D failed: %s", exc)
+
+    # ── Approach E: Google's programmatic_auth endpoint ──
+    logger.info("[cookie_exchange] --- Approach E: programmatic_auth ---")
+    try:
+        jar_e = httpx.Cookies()
+        async with httpx.AsyncClient(cookies=jar_e, follow_redirects=True,
+                                     timeout=httpx.Timeout(30.0)) as c:
+            resp_e = await c.get(
+                "https://accounts.google.com/o/oauth2/programmatic_auth",
                 params={"access_token": access_token},
             )
             logger.info(
-                "[cookie_exchange] tokeninfo HTTP %d, body=%s",
-                tokeninfo_resp.status_code,
-                tokeninfo_resp.text[:500],
+                "[cookie_exchange] E result: HTTP %d, final_url=%s, body_len=%d",
+                resp_e.status_code, str(resp_e.url)[:200], len(resp_e.text),
             )
-        except Exception as exc:
-            logger.warning("[cookie_exchange] tokeninfo check failed (non-fatal): %s", exc)
+            _log_jar("E cookies", jar_e)
 
-        # Step 1: access_token → uberauth
-        logger.info("[cookie_exchange] Step 1: OAuthLogin — requesting uberauth token")
-        try:
-            uber_resp = await client.get(
-                "https://accounts.google.com/OAuthLogin",
-                params={
-                    "source": "ChromiumBrowser",
-                    "issueuberauth": "1",
-                },
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-        except Exception as exc:
-            logger.error("[cookie_exchange] OAuthLogin request failed: %s", exc)
-            raise RuntimeError(f"OAuthLogin request failed: {exc}") from exc
+            storage_e = _build_storage_state_from_jar(jar_e)
+            cookie_names_e = {c["name"] for c in storage_e["cookies"]}
+            if "SID" in cookie_names_e:
+                logger.info("[cookie_exchange] Approach E WORKED!")
+                return storage_e
+    except Exception as exc:
+        logger.warning("[cookie_exchange] Approach E failed: %s", exc)
 
-        logger.info(
-            "[cookie_exchange] OAuthLogin response: HTTP %d, content-type=%s, body_len=%d, final_url=%s",
-            uber_resp.status_code,
-            uber_resp.headers.get("content-type", "?"),
-            len(uber_resp.text),
-            str(uber_resp.url)[:200],
-        )
-
-        if uber_resp.status_code != 200:
-            body = uber_resp.text[:500]
-            logger.error("[cookie_exchange] OAuthLogin FAILED: HTTP %d, body=%s", uber_resp.status_code, body)
-            raise RuntimeError(
-                f"OAuthLogin failed (HTTP {uber_resp.status_code}): {body}"
-            )
-
-        uberauth = uber_resp.text.strip()
-        logger.info("[cookie_exchange] OAuthLogin uberauth: len=%d, preview=%s", len(uberauth), uberauth[:30] + "...")
-
-        if not uberauth or len(uberauth) < 10:
-            logger.error("[cookie_exchange] OAuthLogin returned invalid uberauth: %s", uberauth[:200])
-            raise ValueError(
-                f"OAuthLogin returned invalid uberauth: {uberauth[:100]}"
-            )
-
-        # Log cookies collected so far
-        jar_names_after_step1 = sorted({c.name for c in jar.jar})
-        logger.info("[cookie_exchange] Cookies after OAuthLogin: %d cookies, names=%s", len(list(jar.jar)), jar_names_after_step1)
-
-        # Step 2: uberauth → session cookies via MergeSession
-        logger.info("[cookie_exchange] Step 2: MergeSession — exchanging uberauth for cookies")
-        try:
-            merge_resp = await client.get(
-                "https://accounts.google.com/MergeSession",
-                params={
-                    "uberauth": uberauth,
-                    "continue": _MERGE_CONTINUE_URL,
-                    "source": "ChromiumBrowser",
-                },
-            )
-        except Exception as exc:
-            logger.error("[cookie_exchange] MergeSession request failed: %s", exc)
-            raise RuntimeError(f"MergeSession request failed: {exc}") from exc
-
-        logger.info(
-            "[cookie_exchange] MergeSession response: HTTP %d, final_url=%s, body_len=%d",
-            merge_resp.status_code,
-            str(merge_resp.url)[:200],
-            len(merge_resp.text),
-        )
-
-        # Log all redirect history
-        if merge_resp.history:
-            logger.info("[cookie_exchange] MergeSession redirect chain (%d hops):", len(merge_resp.history))
-            for i, resp in enumerate(merge_resp.history):
-                logger.info(
-                    "[cookie_exchange]   hop %d: HTTP %d → %s",
-                    i, resp.status_code, str(resp.url)[:200],
-                )
-
-        # Log cookies collected after MergeSession
-        jar_names_after_step2 = sorted({c.name for c in jar.jar})
-        jar_domains = sorted({c.domain for c in jar.jar})
-        logger.info(
-            "[cookie_exchange] Cookies after MergeSession: %d cookies, names=%s, domains=%s",
-            len(list(jar.jar)), jar_names_after_step2, jar_domains,
-        )
-
-    storage_state = _build_storage_state_from_jar(jar)
-
-    cookie_names = {c["name"] for c in storage_state["cookies"]}
-    cookie_domains = {c["domain"] for c in storage_state["cookies"]}
-
-    logger.info(
-        "[cookie_exchange] Final storage_state: %d cookies, names=%s, domains=%s",
-        len(storage_state["cookies"]),
-        sorted(cookie_names),
-        sorted(cookie_domains),
+    # ── All approaches failed ──
+    logger.error("[cookie_exchange] === ALL APPROACHES FAILED ===")
+    raise RuntimeError(
+        "All cookie exchange approaches failed. "
+        "Google blocks third-party OAuthLogin scope. "
+        "Check Cloud Run logs for [cookie_exchange] details."
     )
-
-    if "SID" not in cookie_names:
-        logger.error(
-            "[cookie_exchange] SID cookie NOT found! Got cookies: %s from domains: %s",
-            sorted(cookie_names), sorted(cookie_domains),
-        )
-        raise ValueError(
-            f"Cookie exchange failed: SID cookie not found. "
-            f"Got {len(cookie_names)} cookies: {sorted(cookie_names)[:15]}"
-        )
-
-    logger.info("[cookie_exchange] Cookie exchange SUCCESSFUL — SID present")
-    return storage_state

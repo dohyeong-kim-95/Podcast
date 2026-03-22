@@ -159,7 +159,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       provider: "google",
       options: {
         redirectTo,
-        scopes: "openid email profile https://www.google.com/accounts/OAuthLogin",
+        scopes: "openid email profile",
         queryParams: { access_type: "offline", prompt: "consent" },
       },
     });

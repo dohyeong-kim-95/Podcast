@@ -1,4 +1,4 @@
-"""NB session re-authentication APIs (self-hosted remote browser flow)."""
+"""NB session re-authentication APIs (self-hosted remote browser + token exchange)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from app.middleware.auth import get_current_user
 from app.services.db import get_db, serialize_timestamp
-from app.services.notebook import derive_nb_session_status, save_nb_session
+from app.services.notebook import derive_nb_session_status, save_nb_session, validate_storage_state, verify_storage_state_auth
 from app.services.reauth_host import (
     ReauthHostConfigError,
     ReauthHostServiceError,
@@ -413,3 +413,141 @@ async def update_auth_session_from_provider(
         logger.warning("NB re-auth ended with %s for user %s session %s", body.status, uid, body.sessionId)
 
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Token-based re-auth (server-side Google cookie exchange)
+# ---------------------------------------------------------------------------
+
+
+class TokenReauthResponse(BaseModel):
+    success: bool
+    status: str | None = None
+    expiresAt: str | None = None
+    error: str | None = None
+    errorCode: str | None = None
+
+
+@router.post("/token-reauth", response_model=TokenReauthResponse)
+async def token_reauth(
+    user: dict = Depends(get_current_user),
+):
+    """1-click re-auth: exchange stored Google OAuth token for NB session cookies."""
+    from app.services.google_tokens import (
+        load_google_tokens,
+        refresh_google_access_token,
+        delete_google_tokens,
+    )
+    from app.services.cookie_exchange import exchange_access_token_for_cookies
+
+    uid = user["uid"]
+    logger.info("[token-reauth] === START === uid=%s, email=%s", uid, user.get("email"))
+
+    # 1. Load stored Google tokens
+    logger.info("[token-reauth] Step 1: Loading Google tokens from DB")
+    try:
+        tokens = await load_google_tokens(uid)
+    except ValueError as exc:
+        logger.warning("[token-reauth] Step 1 FAILED — no tokens: %s", exc)
+        return TokenReauthResponse(
+            success=False,
+            error="Google 토큰이 저장되어 있지 않습니다. Google 재로그인이 필요합니다.",
+            errorCode="no_refresh_token",
+        )
+
+    refresh_token = tokens.get("refreshToken")
+    if not refresh_token:
+        logger.warning("[token-reauth] Step 1 — tokens exist but no refreshToken")
+        return TokenReauthResponse(
+            success=False,
+            error="Google refresh token이 없습니다. Google 재로그인이 필요합니다.",
+            errorCode="no_refresh_token",
+        )
+    logger.info("[token-reauth] Step 1 OK — refresh_token loaded (len=%d)", len(refresh_token))
+
+    # 2. Get fresh access_token
+    logger.info("[token-reauth] Step 2: Refreshing Google access_token")
+    try:
+        access_token = await refresh_google_access_token(refresh_token)
+    except ValueError as exc:
+        logger.warning("[token-reauth] Step 2 FAILED — token expired/revoked: %s", exc)
+        await delete_google_tokens(uid)
+        return TokenReauthResponse(
+            success=False,
+            error=f"Google 토큰이 만료되었습니다. Google 재로그인이 필요합니다. ({exc})",
+            errorCode="token_expired",
+        )
+    except RuntimeError as exc:
+        logger.error("[token-reauth] Step 2 FAILED — refresh error: %s", exc)
+        return TokenReauthResponse(
+            success=False,
+            error=f"Google 토큰 갱신 실패: {exc}",
+            errorCode="exchange_failed",
+        )
+    logger.info("[token-reauth] Step 2 OK — access_token obtained (len=%d)", len(access_token))
+
+    # 3. Exchange access_token for NB cookies
+    logger.info("[token-reauth] Step 3: Cookie exchange (OAuthLogin + MergeSession)")
+    try:
+        storage_state = await exchange_access_token_for_cookies(access_token)
+    except (ValueError, RuntimeError) as exc:
+        logger.error("[token-reauth] Step 3 FAILED — cookie exchange: %s", exc, exc_info=True)
+        return TokenReauthResponse(
+            success=False,
+            error=f"쿠키 교환 실패: {exc}",
+            errorCode="exchange_failed",
+        )
+
+    cookie_names = sorted({c["name"] for c in storage_state.get("cookies", [])})
+    logger.info("[token-reauth] Step 3 OK — got %d cookies: %s", len(storage_state.get("cookies", [])), cookie_names)
+
+    # 4. Validate cookies
+    logger.info("[token-reauth] Step 4: Validating storage_state (required cookies check)")
+    try:
+        validate_storage_state(storage_state)
+    except ValueError as exc:
+        logger.error("[token-reauth] Step 4 FAILED — validation: %s", exc)
+        return TokenReauthResponse(
+            success=False,
+            error=f"유효한 쿠키를 받지 못했습니다: {exc}",
+            errorCode="cookies_invalid",
+        )
+    logger.info("[token-reauth] Step 4 OK — storage_state valid")
+
+    # 5. Verify with notebooklm-py
+    logger.info("[token-reauth] Step 5: Verifying auth with notebooklm-py (fetch CSRF+session tokens)")
+    try:
+        await verify_storage_state_auth(storage_state)
+    except Exception as exc:
+        logger.error("[token-reauth] Step 5 FAILED — notebooklm-py verification: %s", exc, exc_info=True)
+        return TokenReauthResponse(
+            success=False,
+            error=f"NotebookLM 인증 검증 실패: {exc}",
+            errorCode="cookies_invalid",
+        )
+    logger.info("[token-reauth] Step 5 OK — notebooklm-py auth verified")
+
+    # 6. Save encrypted session
+    logger.info("[token-reauth] Step 6: Saving encrypted NB session to DB")
+    try:
+        session_meta = await save_nb_session(
+            uid, storage_state, auth_flow="token_exchange"
+        )
+    except ValueError as exc:
+        logger.error("[token-reauth] Step 6 FAILED — save: %s", exc, exc_info=True)
+        return TokenReauthResponse(
+            success=False,
+            error=f"세션 저장 실패: {exc}",
+            errorCode="cookies_invalid",
+        )
+    logger.info(
+        "[token-reauth] Step 6 OK — session saved: status=%s, expiresAt=%s",
+        session_meta.get("status"), session_meta.get("expiresAt"),
+    )
+
+    logger.info("[token-reauth] === SUCCESS === uid=%s", uid)
+    return TokenReauthResponse(
+        success=True,
+        status=session_meta.get("status"),
+        expiresAt=serialize_timestamp(session_meta.get("expiresAt")),
+    )

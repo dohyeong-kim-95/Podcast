@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.routers import auth, memory, nb_session, podcast, push, sources
+from app.routers import auth, google_tokens, memory, nb_session, podcast, push, sources
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(google_tokens.router)
 app.include_router(sources.router)
 app.include_router(podcast.router)
 app.include_router(memory.router)

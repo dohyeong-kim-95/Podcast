@@ -25,6 +25,7 @@ interface AuthContextType {
   loading: boolean;
   verified: "idle" | "pending" | "verified" | "denied";
   signInWithGoogle: () => Promise<void>;
+  reAuthWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -33,6 +34,7 @@ const AuthContext = createContext<AuthContextType>({
   loading: true,
   verified: "idle",
   signInWithGoogle: async () => {},
+  reAuthWithGoogle: async () => {},
   signOut: async () => {},
 });
 
@@ -151,12 +153,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const reAuthWithGoogle = async () => {
+    const redirectTo = `${window.location.origin}/auth/callback?next=/settings`;
+    const { error } = await getSupabaseBrowserClient().auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo,
+        scopes: "openid email profile",
+        queryParams: { access_type: "offline", prompt: "consent" },
+      },
+    });
+
+    if (error) {
+      throw error;
+    }
+  };
+
   const signOut = async () => {
     await getSupabaseBrowserClient().auth.signOut();
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, verified, signInWithGoogle, signOut }}>
+    <AuthContext.Provider value={{ user, loading, verified, signInWithGoogle, reAuthWithGoogle, signOut }}>
       {children}
     </AuthContext.Provider>
   );

@@ -1,18 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import StatusBanner from "@/components/StatusBanner";
 import { useAuth } from "@/lib/auth-context";
 import {
   getNbSessionStatus,
-  pollNbSessionAuth,
   registerPushSubscription,
-  startNbSessionAuth,
-  type NbAuthSessionStatus,
+  tokenReauth,
   type NbSessionStatusResponse,
+  type TokenReauthResponse,
 } from "@/lib/api";
 import {
   formatPushSubscriptionError,
@@ -30,14 +28,14 @@ export default function SettingsPage() {
 }
 
 function SettingsContent() {
-  const { user } = useAuth();
+  const { user, reAuthWithGoogle } = useAuth();
   const router = useRouter();
   const [session, setSession] = useState<NbSessionStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [sessionNotice, setSessionNotice] = useState<string | null>(null);
-  const [pollSessionId, setPollSessionId] = useState<string | null>(null);
+  const [lastReauthErrorCode, setLastReauthErrorCode] = useState<string | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported" | "checking">("checking");
   const [notificationEndpoint, setNotificationEndpoint] = useState<string | null>(null);
   const [notificationError, setNotificationError] = useState<string | null>(null);
@@ -51,11 +49,6 @@ function SettingsContent() {
       const result = await getNbSessionStatus();
       setSession(result);
       setSessionError(null);
-      if (result.authSession?.status === "pending") {
-        setPollSessionId(result.authSession.sessionId);
-      } else {
-        setPollSessionId(null);
-      }
     } catch {
       setSessionError("세션 상태를 불러오지 못했습니다");
     } finally {
@@ -91,102 +84,36 @@ function SettingsContent() {
     void refreshNotificationState();
   }, [refreshNotificationState, refreshStatus]);
 
-  useEffect(() => {
-    if (!pollSessionId) {
-      return;
-    }
-
-    let cancelled = false;
-
-    const tick = async () => {
-      try {
-        const result = await pollNbSessionAuth(pollSessionId);
-        if (cancelled) {
-          return;
-        }
-
-        setSession((current) =>
-          current
-            ? {
-                ...current,
-                authSession: result,
-              }
-            : {
-                status: "missing",
-                authSession: result,
-              },
-        );
-
-        if (result.status === "completed") {
-          setSessionNotice("NotebookLM 세션이 저장되었습니다");
-          setPollSessionId(null);
-          await refreshStatus();
-        } else if (result.status === "failed" || result.status === "timed_out") {
-          setSessionError(result.error || "재인증에 실패했습니다");
-          setPollSessionId(null);
-          await refreshStatus();
-        }
-      } catch {
-        if (!cancelled) {
-          setSessionError("세션 상태를 확인하지 못했습니다");
-          setPollSessionId(null);
-        }
-      }
-    };
-
-    void tick();
-    const interval = window.setInterval(() => {
-      void tick();
-    }, 3000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [pollSessionId, refreshStatus]);
-
-  const handleStartAuth = useCallback(async () => {
+  const handleTokenReauth = useCallback(async () => {
     setStarting(true);
     setSessionError(null);
     setSessionNotice(null);
+    setLastReauthErrorCode(null);
 
     try {
-      const result = await startNbSessionAuth();
-      const nextAuthSession: NbAuthSessionStatus = {
-        sessionId: result.sessionId,
-        status: result.status,
-        viewerUrl: result.viewerUrl,
-        authFlow: result.authFlow,
-        error: result.error,
-        completedAt: result.completedAt,
-      };
-
-      setSession((current) =>
-        current
-          ? {
-              ...current,
-              authSession: nextAuthSession,
-            }
-          : {
-              status: "missing",
-              authSession: nextAuthSession,
-            },
-      );
-      setPollSessionId(result.sessionId);
-
-      const popup = window.open(result.viewerUrl, "_blank", "noopener,noreferrer");
-      if (!popup) {
-        setSessionNotice("브라우저가 새 탭 열기를 차단했습니다. 아래 링크를 눌러 직접 열어주세요.");
+      const result: TokenReauthResponse = await tokenReauth();
+      if (result.success) {
+        setSessionNotice("NotebookLM 세션이 갱신되었습니다.");
+        await refreshStatus();
       } else {
-        setSessionNotice("새 탭에서 NotebookLM 로그인을 완료하면 이 화면이 자동으로 갱신됩니다.");
+        setLastReauthErrorCode(result.errorCode ?? null);
+        setSessionError(result.error || "세션 갱신에 실패했습니다.");
       }
     } catch (err) {
-      const message = formatApiErrorMessage(err, "재인증을 시작하지 못했습니다");
+      const message = formatApiErrorMessage(err, "세션 갱신에 실패했습니다");
       setSessionError(message);
     } finally {
       setStarting(false);
     }
-  }, []);
+  }, [refreshStatus]);
+
+  const handleReAuthWithGoogle = useCallback(async () => {
+    try {
+      await reAuthWithGoogle();
+    } catch (err) {
+      setSessionError(formatApiErrorMessage(err, "Google 재로그인에 실패했습니다"));
+    }
+  }, [reAuthWithGoogle]);
 
   const handleEnableNotifications = useCallback(async () => {
     if (notificationPermission === "default" && !notificationPromptArmed) {
@@ -300,22 +227,11 @@ function SettingsContent() {
 
         <section className="space-y-3 rounded-xl bg-[#181818] p-4">
           <div>
-            <p className="text-sm font-semibold">재인증</p>
+            <p className="text-sm font-semibold">세션 관리</p>
             <p className="mt-1 text-xs text-[#b3b3b3]">
-              열린 원격 브라우저에서 NotebookLM 로그인을 완료하면 세션이 자동 저장됩니다.
+              저장된 Google 토큰으로 NotebookLM 세션을 갱신합니다.
             </p>
           </div>
-
-          {session?.authSession?.viewerUrl && session.authSession.status === "pending" && (
-            <Link
-              href={session.authSession.viewerUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="block rounded-lg border border-[#282828] px-4 py-3 text-sm text-[#9ad8ff] hover:border-sky-700/50"
-            >
-              재인증 브라우저 다시 열기
-            </Link>
-          )}
 
           {sessionNotice && (
             <div className="rounded-lg border border-emerald-800/40 bg-emerald-950/20 px-4 py-3 text-sm text-emerald-200">
@@ -331,12 +247,22 @@ function SettingsContent() {
 
           <button
             type="button"
-            onClick={handleStartAuth}
-            disabled={starting || session?.authSession?.status === "pending"}
+            onClick={handleTokenReauth}
+            disabled={starting}
             className="w-full rounded-full bg-[#1DB954] py-3 text-sm font-semibold text-black transition-colors hover:bg-[#1ed760] disabled:opacity-50"
           >
-            {starting || session?.authSession?.status === "pending" ? "재인증 준비 중..." : "원격 브라우저에서 재인증"}
+            {starting ? "세션 갱신 중..." : "세션 갱신"}
           </button>
+
+          {lastReauthErrorCode === "no_refresh_token" || lastReauthErrorCode === "token_expired" ? (
+            <button
+              type="button"
+              onClick={handleReAuthWithGoogle}
+              className="w-full rounded-full border border-[#1DB954]/40 bg-[#1DB954]/10 py-3 text-sm font-semibold text-[#9ef0b7] transition-colors hover:bg-[#1DB954]/20"
+            >
+              Google 재로그인
+            </button>
+          ) : null}
         </section>
 
         <section className="space-y-3 rounded-xl bg-[#181818] p-4">

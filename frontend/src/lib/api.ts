@@ -297,6 +297,18 @@ export async function pollNbSessionAuth(sessionId: string): Promise<NbAuthSessio
   return apiGet(`/api/nb-session/poll/${sessionId}`);
 }
 
+export interface TokenReauthResponse {
+  success: boolean;
+  status?: string;
+  expiresAt?: string;
+  error?: string;
+  errorCode?: string;
+}
+
+export async function tokenReauth(): Promise<TokenReauthResponse> {
+  return apiPost("/api/nb-session/token-reauth");
+}
+
 export interface RegisterPushSubscriptionResponse {
   registered: boolean;
 }

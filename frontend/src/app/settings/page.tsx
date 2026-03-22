@@ -35,7 +35,7 @@ function SettingsContent() {
   const [starting, setStarting] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [sessionNotice, setSessionNotice] = useState<string | null>(null);
-  const [lastReauthErrorCode, setLastReauthErrorCode] = useState<string | null>(null);
+  const [, setLastReauthErrorCode] = useState<string | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported" | "checking">("checking");
   const [notificationEndpoint, setNotificationEndpoint] = useState<string | null>(null);
   const [notificationError, setNotificationError] = useState<string | null>(null);

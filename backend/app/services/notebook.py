@@ -109,6 +109,28 @@ NOTEBOOKLM_OPERATION_RETRY_COUNT = _load_operation_retry_count()
 NOTEBOOKLM_OPERATION_RETRY_DELAY_SECONDS = _load_operation_retry_delay_seconds()
 
 
+def _load_notebooklm_http_timeout_seconds() -> float:
+    raw = os.getenv("NOTEBOOKLM_HTTP_TIMEOUT_SECONDS", "60")
+    try:
+        return max(10.0, float(raw))
+    except ValueError:
+        logger.warning("Invalid NOTEBOOKLM_HTTP_TIMEOUT_SECONDS=%r, falling back to 60", raw)
+        return 60.0
+
+
+def _load_notebooklm_connect_timeout_seconds() -> float:
+    raw = os.getenv("NOTEBOOKLM_CONNECT_TIMEOUT_SECONDS", "30")
+    try:
+        return max(5.0, float(raw))
+    except ValueError:
+        logger.warning("Invalid NOTEBOOKLM_CONNECT_TIMEOUT_SECONDS=%r, falling back to 30", raw)
+        return 30.0
+
+
+NOTEBOOKLM_HTTP_TIMEOUT_SECONDS = _load_notebooklm_http_timeout_seconds()
+NOTEBOOKLM_CONNECT_TIMEOUT_SECONDS = _load_notebooklm_connect_timeout_seconds()
+
+
 def _get_fernet() -> Fernet:
     key = os.getenv("NB_COOKIE_ENCRYPTION_KEY", "")
     if not key:
@@ -406,7 +428,7 @@ class NotebookLMClient:
         if self._client is not None:
             return self._client
 
-        from notebooklm import NotebookLMClient as NotebookLMServiceClient
+        from notebooklm import AuthTokens, NotebookLMClient as NotebookLMServiceClient
 
         # Write storage state to temp file for notebooklm-py
         self._state_file = tempfile.NamedTemporaryFile(
@@ -415,10 +437,14 @@ class NotebookLMClient:
         json.dump(self._storage_state, self._state_file)
         self._state_file.close()
 
-        self._client = await NotebookLMServiceClient.from_storage(self._state_file.name)
+        auth = await AuthTokens.from_storage(Path(self._state_file.name))
+        self._client = NotebookLMServiceClient(auth, timeout=NOTEBOOKLM_HTTP_TIMEOUT_SECONDS)
+        if hasattr(self._client, "_core") and hasattr(self._client._core, "_connect_timeout"):
+            self._client._core._connect_timeout = NOTEBOOKLM_CONNECT_TIMEOUT_SECONDS
         if hasattr(self._client, "__aenter__"):
             await self._client.__aenter__()
             self._entered = True
+        await self._refresh_auth_if_possible()
         return self._client
 
     async def create_notebook(self, title: str = "Daily Podcast") -> str:
